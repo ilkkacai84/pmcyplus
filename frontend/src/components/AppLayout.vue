@@ -7,6 +7,7 @@ const auth = useAuthStore()
 const router = useRouter()
 const menuOpen = ref(false)
 const isAdmin = computed(() => auth.user?.roles.includes('ADMIN'))
+const isDepartmentManager = computed(() => auth.user?.roles.includes('DEPARTMENT_MANAGER'))
 
 async function signOut() {
   await auth.logout()
@@ -25,7 +26,9 @@ async function signOut() {
         <RouterLink to="/" exact-active-class="active"><span>◫</span> 工作台</RouterLink>
         <RouterLink to="/requirements" active-class="active"><span>◇</span> 需求中心</RouterLink>
         <RouterLink to="/projects" active-class="active"><span>▦</span> 项目中心</RouterLink>
+        <RouterLink v-if="isDepartmentManager" to="/department" active-class="active"><span>◉</span> 部门视图</RouterLink>
         <RouterLink v-if="isAdmin" to="/users" active-class="active"><span>◎</span> 账号管理</RouterLink>
+        <RouterLink v-if="isAdmin" to="/audit" active-class="active"><span>◌</span> 审计日志</RouterLink>
       </nav>
       <div class="sidebar-note">
         <strong>第一版 MVP</strong>

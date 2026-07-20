@@ -1,5 +1,6 @@
 package com.rcai.pm.project;
 
+import com.rcai.pm.audit.AuditService;
 import com.rcai.pm.common.ApiException;
 import com.rcai.pm.user.Role;
 import com.rcai.pm.user.UserAccount;
@@ -17,6 +18,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -29,10 +31,11 @@ public class ProjectService {
     private final WorklogRepository worklogs;
     private final DeliveryVersionRepository deliveries;
     private final UserAccountRepository users;
+    private final AuditService audit;
 
     public ProjectService(ProjectRepository projects, ProjectMemberRepository members, MilestoneRepository milestones,
                           TaskItemRepository tasks, WorklogRepository worklogs, DeliveryVersionRepository deliveries,
-                          UserAccountRepository users) {
+                          UserAccountRepository users, AuditService audit) {
         this.projects = projects;
         this.members = members;
         this.milestones = milestones;
@@ -40,6 +43,7 @@ public class ProjectService {
         this.worklogs = worklogs;
         this.deliveries = deliveries;
         this.users = users;
+        this.audit = audit;
     }
 
     public List<ProjectSummary> list(Authentication authentication) {
@@ -74,13 +78,18 @@ public class ProjectService {
         );
         project = projects.save(project);
         members.save(new ProjectMember(project.getId(), manager.getId(), "MANAGER"));
+        audit.log(actor, "PROJECT_CREATED", "PROJECT", project.getId(), Map.of("name", project.getName()));
         return ProjectSummary.from(project);
     }
 
     @Transactional
     public ProjectSummary changeProjectStatus(Long projectId, ProjectStatus status, Authentication authentication) {
         Project project = managedProject(projectId, authentication);
+        ProjectStatus previous = project.getStatus();
         project.changeStatus(status);
+        audit.log(authentication, "PROJECT_STATUS_CHANGED", "PROJECT", projectId, Map.of(
+            "from", previous.name(), "to", status.name()
+        ));
         return ProjectSummary.from(project);
     }
 
@@ -88,7 +97,9 @@ public class ProjectService {
     public MilestoneView createMilestone(Long projectId, CreateMilestone request, Authentication authentication) {
         Project project = managedProject(projectId, authentication);
         UserAccount owner = request.ownerId() == null ? project.getManager() : user(request.ownerId());
-        return MilestoneView.from(milestones.save(new Milestone(project, request.name().trim(), owner, request.plannedAt())));
+        Milestone milestone = milestones.save(new Milestone(project, request.name().trim(), owner, request.plannedAt()));
+        audit.log(authentication, "MILESTONE_CREATED", "MILESTONE", milestone.getId(), Map.of("projectId", projectId));
+        return MilestoneView.from(milestone);
     }
 
     @Transactional
@@ -106,6 +117,9 @@ public class ProjectService {
         if (!members.existsByProjectIdAndUserId(projectId, owner.getId())) {
             members.save(new ProjectMember(projectId, owner.getId(), "MEMBER"));
         }
+        audit.log(authentication, "TASK_CREATED", "TASK", task.getId(), Map.of(
+            "projectId", projectId, "ownerId", owner.getId()
+        ));
         return TaskView.from(task);
     }
 
@@ -132,6 +146,9 @@ public class ProjectService {
             || ((admin || manager) && managementTransition);
         if (!allowed) throw new ApiException(HttpStatus.FORBIDDEN, "当前角色不能执行该状态变更");
         task.changeStatus(target);
+        audit.log(actor, "TASK_STATUS_CHANGED", "TASK", taskId, Map.of(
+            "from", current.name(), "to", target.name()
+        ));
         return TaskView.from(task);
     }
 
@@ -150,7 +167,12 @@ public class ProjectService {
         worklogs.save(new Worklog(task, actor, request.hours(), request.note(), request.workedOn()));
         task.addActualHours(request.hours());
         task.changeStatus(TaskStatus.PENDING_ACCEPTANCE);
-        deliveries.save(new DeliveryVersion(task, deliveries.findMaxVersionNo(taskId) + 1, actor, request.note()));
+        DeliveryVersion delivery = deliveries.save(new DeliveryVersion(
+            task, deliveries.findMaxVersionNo(taskId) + 1, actor, request.note()
+        ));
+        audit.log(actor, "TASK_DELIVERED", "TASK", taskId, Map.of(
+            "version", delivery.getVersionNo(), "hours", request.hours()
+        ));
         return TaskView.from(task);
     }
 
@@ -176,6 +198,10 @@ public class ProjectService {
             .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "未找到待验收交付版本"));
         delivery.review(request.decision(), actor, request.opinion());
         task.changeStatus(request.decision() == DeliveryStatus.ACCEPTED ? TaskStatus.COMPLETED : TaskStatus.IN_PROGRESS);
+        audit.log(actor, "DELIVERY_REVIEWED", "TASK", taskId, Map.of(
+            "version", delivery.getVersionNo(), "decision", request.decision().name(),
+            "opinion", request.opinion() == null ? "" : request.opinion()
+        ));
         return DeliveryView.from(delivery);
     }
 

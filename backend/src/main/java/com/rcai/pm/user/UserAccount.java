@@ -11,6 +11,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
@@ -24,7 +25,9 @@ public class UserAccount {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private Long departmentId;
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "department_id")
+    private Department department;
 
     @Column(nullable = false, unique = true, length = 80)
     private String username;
@@ -62,17 +65,25 @@ public class UserAccount {
     }
 
     public UserAccount(String username, String passwordHash, String displayName, UserType userType, Set<Role> roles) {
+        this(username, passwordHash, displayName, null, userType, roles, null);
+    }
+
+    public UserAccount(String username, String passwordHash, String displayName, String email,
+                       UserType userType, Set<Role> roles, Department department) {
         this.username = username;
         this.passwordHash = passwordHash;
         this.displayName = displayName;
+        this.email = email;
         this.userType = userType;
+        this.department = department;
         this.roles.addAll(roles);
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
     }
 
     public Long getId() { return id; }
-    public Long getDepartmentId() { return departmentId; }
+    public Long getDepartmentId() { return department == null ? null : department.getId(); }
+    public Department getDepartment() { return department; }
     public String getUsername() { return username; }
     public String getPasswordHash() { return passwordHash; }
     public String getDisplayName() { return displayName; }

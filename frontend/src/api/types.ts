@@ -17,8 +17,46 @@ export interface UserSummary {
   id: number
   username: string
   displayName: string
+  email?: string
   userType: 'INTERNAL' | 'CUSTOMER'
   roles: Role[]
+  departmentId?: number
+  departmentName?: string
+}
+
+export interface DepartmentSummary {
+  id: number
+  name: string
+  parentId?: number
+  managerId?: number
+  managerName?: string
+}
+
+export interface DepartmentTask {
+  id: number
+  projectId: number
+  projectName: string
+  title: string
+  ownerId: number
+  ownerName: string
+  status: TaskStatus
+  plannedEndAt?: string
+}
+
+export interface DepartmentScope {
+  department?: DepartmentSummary
+  tasks: DepartmentTask[]
+}
+
+export interface AuditLog {
+  id: number
+  actorId?: number
+  actorName: string
+  action: string
+  objectType: string
+  objectId?: number
+  detailJson?: string
+  createdAt: string
 }
 
 export interface ProjectSummary {

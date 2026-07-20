@@ -1,5 +1,6 @@
 package com.rcai.pm.requirement;
 
+import com.rcai.pm.audit.AuditService;
 import com.rcai.pm.common.ApiException;
 import com.rcai.pm.project.Priority;
 import com.rcai.pm.project.Project;
@@ -20,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -29,13 +31,15 @@ public class RequirementService {
     private final UserAccountRepository users;
     private final ProjectRepository projects;
     private final ProjectService projectService;
+    private final AuditService audit;
 
     public RequirementService(RequirementRepository requirements, UserAccountRepository users, ProjectRepository projects,
-                              ProjectService projectService) {
+                              ProjectService projectService, AuditService audit) {
         this.requirements = requirements;
         this.users = users;
         this.projects = projects;
         this.projectService = projectService;
+        this.audit = audit;
     }
 
     public List<RequirementView> list(Authentication authentication) {
@@ -57,8 +61,11 @@ public class RequirementService {
         if (customer != null && customer.getUserType() != UserType.CUSTOMER) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "所选账号不是客户账号");
         }
-        Requirement requirement = new Requirement(uniqueNumber(), request.source(), request.title().trim(), request.description(), actor, customer, request.priority());
-        return RequirementView.from(requirements.save(requirement));
+        Requirement requirement = requirements.save(new Requirement(
+            uniqueNumber(), request.source(), request.title().trim(), request.description(), actor, customer, request.priority()
+        ));
+        audit.log(actor, "REQUIREMENT_CREATED", "REQUIREMENT", requirement.getId(), Map.of("title", requirement.getTitle()));
+        return RequirementView.from(requirement);
     }
 
     @Transactional
@@ -79,6 +86,9 @@ public class RequirementService {
             throw new ApiException(HttpStatus.FORBIDDEN, "项目经理只能把需求关联到自己管理的项目");
         }
         requirement.assign(assignee, project);
+        audit.log(actor, "REQUIREMENT_ASSIGNED", "REQUIREMENT", requirement.getId(), Map.of(
+            "assigneeId", assignee.getId(), "projectId", String.valueOf(request.projectId())
+        ));
         return RequirementView.from(requirement);
     }
 
@@ -95,6 +105,9 @@ public class RequirementService {
             || ((admin || assignee) && current == RequirementStatus.REJECTED && status == RequirementStatus.REFINING);
         if (!allowed) throw new ApiException(HttpStatus.FORBIDDEN, "不能执行此需求状态变更");
         requirement.changeStatus(status);
+        audit.log(actor, "REQUIREMENT_STATUS_CHANGED", "REQUIREMENT", requirement.getId(), Map.of(
+            "from", current.name(), "to", status.name()
+        ));
         return RequirementView.from(requirement);
     }
 
@@ -122,6 +135,9 @@ public class RequirementService {
             customerId, request.plannedStartAt(), request.plannedEndAt()
         ), authentication);
         requirement.linkProject(projects.getReferenceById(created.id()));
+        audit.log(actor, "REQUIREMENT_LINKED_TO_PROJECT", "REQUIREMENT", requirement.getId(), Map.of(
+            "projectId", created.id()
+        ));
         return created;
     }
 

@@ -1,5 +1,6 @@
 package com.rcai.pm;
 
+import com.rcai.pm.audit.AuditService;
 import com.rcai.pm.project.Priority;
 import com.rcai.pm.project.DeliveryStatus;
 import com.rcai.pm.project.ProjectService;
@@ -9,13 +10,18 @@ import com.rcai.pm.requirement.RequirementService;
 import com.rcai.pm.requirement.RequirementSource;
 import com.rcai.pm.requirement.RequirementStatus;
 import com.rcai.pm.user.Role;
+import com.rcai.pm.user.Department;
+import com.rcai.pm.user.DepartmentRepository;
+import com.rcai.pm.user.DepartmentService;
 import com.rcai.pm.user.UserAccount;
 import com.rcai.pm.user.UserAccountRepository;
+import com.rcai.pm.user.UserController;
 import com.rcai.pm.user.UserType;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Set;
@@ -32,6 +38,14 @@ class ProjectManagementApplicationTests {
     private ProjectService projects;
     @Autowired
     private RequirementService requirements;
+    @Autowired
+    private DepartmentService departments;
+    @Autowired
+    private DepartmentRepository departmentRepository;
+    @Autowired
+    private UserController userController;
+    @Autowired
+    private AuditService audit;
 
     @Test
     void contextLoads() {
@@ -133,6 +147,83 @@ class ProjectManagementApplicationTests {
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> requirements.transition(
             requirementId, RequirementStatus.REJECTED, submitterAuth
         )).isInstanceOf(com.rcai.pm.common.ApiException.class);
+
+        assertThat(audit.list()).extracting(AuditService.AuditView::action)
+            .contains("REQUIREMENT_CREATED", "REQUIREMENT_ASSIGNED", "REQUIREMENT_STATUS_CHANGED",
+                "PROJECT_CREATED", "REQUIREMENT_LINKED_TO_PROJECT");
+    }
+
+    @Test
+    @Transactional
+    @WithMockUser(roles = "ADMIN")
+    void adminCanCreateDepartmentHierarchyAndAssignUser() {
+        UserAccount departmentManager = saveUser(
+            "department-manager", "部门负责人", UserType.INTERNAL, Role.DEPARTMENT_MANAGER
+        );
+        var headquarters = departments.create(new DepartmentService.SaveDepartment("总部", null, null));
+        var delivery = departments.create(new DepartmentService.SaveDepartment(
+            "交付部", headquarters.id(), departmentManager.getId()
+        ));
+
+        var member = userController.create(new UserController.CreateUser(
+            "department-member", "Password@123", "部门成员", "member@example.com",
+            UserType.INTERNAL, Set.of(Role.MEMBER), delivery.id()
+        ), authentication(departmentManager));
+
+        assertThat(member.departmentId()).isEqualTo(delivery.id());
+        assertThat(member.departmentName()).isEqualTo("交付部");
+        assertThat(departments.list()).extracting(DepartmentService.DepartmentView::name)
+            .containsExactly("交付部", "总部");
+    }
+
+    @Test
+    @Transactional
+    @WithMockUser(roles = "DEPARTMENT_MANAGER")
+    void departmentManagerOnlySeesOwnDepartmentMembersAndTasks() {
+        var deliveryView = departments.create(new DepartmentService.SaveDepartment("交付部-隔离", null, null));
+        var salesView = departments.create(new DepartmentService.SaveDepartment("销售部-隔离", null, null));
+        Department delivery = departmentRepository.findById(deliveryView.id()).orElseThrow();
+        Department sales = departmentRepository.findById(salesView.id()).orElseThrow();
+
+        UserAccount departmentManager = users.save(new UserAccount(
+            "scope-department-manager", "unused", "交付部负责人", null,
+            UserType.INTERNAL, Set.of(Role.DEPARTMENT_MANAGER), delivery
+        ));
+        UserAccount deliveryMember = users.save(new UserAccount(
+            "scope-delivery-member", "unused", "交付部成员", null,
+            UserType.INTERNAL, Set.of(Role.MEMBER), delivery
+        ));
+        UserAccount salesMember = users.save(new UserAccount(
+            "scope-sales-member", "unused", "销售部成员", null,
+            UserType.INTERNAL, Set.of(Role.MEMBER), sales
+        ));
+        departments.update(delivery.getId(), new DepartmentService.SaveDepartment(
+            delivery.getName(), null, departmentManager.getId()
+        ));
+
+        UserAccount projectManager = saveUser(
+            "scope-project-manager", "隔离测试项目经理", UserType.INTERNAL, Role.PROJECT_MANAGER
+        );
+        var project = projects.create(new ProjectService.CreateProject(
+            "部门隔离项目", null, ProjectType.INTERNAL, Priority.MEDIUM,
+            projectManager.getId(), null, null, null
+        ), authentication(projectManager));
+        projects.createTask(project.id(), new ProjectService.CreateTask(
+            "交付部任务", null, deliveryMember.getId(), null, null, Priority.MEDIUM,
+            null, null, BigDecimal.valueOf(8)
+        ), authentication(projectManager));
+        projects.createTask(project.id(), new ProjectService.CreateTask(
+            "销售部任务", null, salesMember.getId(), null, null, Priority.MEDIUM,
+            null, null, BigDecimal.valueOf(8)
+        ), authentication(projectManager));
+
+        var departmentAuth = authentication(departmentManager);
+        assertThat(departments.myScope(departmentAuth).tasks())
+            .extracting(DepartmentService.DepartmentTaskView::title)
+            .containsExactly("交付部任务");
+        assertThat(userController.list(departmentAuth))
+            .extracting(UserController.UserSummary::username)
+            .containsExactlyInAnyOrder("scope-department-manager", "scope-delivery-member");
     }
 
     private UserAccount saveUser(String username, String displayName, UserType type, Role role) {
