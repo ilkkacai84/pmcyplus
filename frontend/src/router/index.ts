@@ -7,6 +7,10 @@ import ProjectsView from '@/views/ProjectsView.vue'
 import ProjectDetailView from '@/views/ProjectDetailView.vue'
 import RequirementsView from '@/views/RequirementsView.vue'
 import UsersView from '@/views/UsersView.vue'
+import DepartmentView from '@/views/DepartmentView.vue'
+import AuditView from '@/views/AuditView.vue'
+import WorkflowView from '@/views/WorkflowView.vue'
+import NotificationsView from '@/views/NotificationsView.vue'
 import type { Role } from '@/api/types'
 
 const router = createRouter({
@@ -20,7 +24,11 @@ const router = createRouter({
         { path: 'projects', component: ProjectsView },
         { path: 'projects/:id', component: ProjectDetailView },
         { path: 'requirements', component: RequirementsView },
+        { path: 'department', component: DepartmentView, meta: { roles: ['DEPARTMENT_MANAGER'] } },
         { path: 'users', component: UsersView, meta: { roles: ['ADMIN'] } },
+        { path: 'audit', component: AuditView, meta: { roles: ['ADMIN'] } },
+        { path: 'workflows', component: WorkflowView, meta: { roles: ['ADMIN'] } },
+        { path: 'notifications', component: NotificationsView },
       ],
     },
   ],

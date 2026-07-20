@@ -1,9 +1,13 @@
 package com.rcai.pm.requirement;
 
+import com.rcai.pm.audit.AuditService;
+import com.rcai.pm.notification.NotificationService;
 import com.rcai.pm.common.ApiException;
 import com.rcai.pm.project.Priority;
 import com.rcai.pm.project.Project;
 import com.rcai.pm.project.ProjectRepository;
+import com.rcai.pm.project.ProjectService;
+import com.rcai.pm.project.ProjectType;
 import com.rcai.pm.user.Role;
 import com.rcai.pm.user.UserAccount;
 import com.rcai.pm.user.UserAccountRepository;
@@ -16,7 +20,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -25,11 +31,21 @@ public class RequirementService {
     private final RequirementRepository requirements;
     private final UserAccountRepository users;
     private final ProjectRepository projects;
+    private final ProjectService projectService;
+    private final AuditService audit;
+    private final ApprovalService approvals;
+    private final NotificationService notifications;
 
-    public RequirementService(RequirementRepository requirements, UserAccountRepository users, ProjectRepository projects) {
+    public RequirementService(RequirementRepository requirements, UserAccountRepository users, ProjectRepository projects,
+                              ProjectService projectService, AuditService audit, ApprovalService approvals,
+                              NotificationService notifications) {
         this.requirements = requirements;
         this.users = users;
         this.projects = projects;
+        this.projectService = projectService;
+        this.audit = audit;
+        this.approvals = approvals;
+        this.notifications = notifications;
     }
 
     public List<RequirementView> list(Authentication authentication) {
@@ -51,8 +67,14 @@ public class RequirementService {
         if (customer != null && customer.getUserType() != UserType.CUSTOMER) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "所选账号不是客户账号");
         }
-        Requirement requirement = new Requirement(uniqueNumber(), request.source(), request.title().trim(), request.description(), actor, customer, request.priority());
-        return RequirementView.from(requirements.save(requirement));
+        Requirement requirement = requirements.save(new Requirement(
+            uniqueNumber(), request.source(), request.title().trim(), request.description(), actor, customer,
+            request.priority(), request.projectType()
+        ));
+        audit.log(actor, "REQUIREMENT_CREATED", "REQUIREMENT", requirement.getId(), Map.of("title", requirement.getTitle()));
+        notifications.notify(List.of(actor), "REQUIREMENT_CREATED", "需求已提交", requirement.getTitle(),
+            "REQUIREMENT", requirement.getId(), 0);
+        return RequirementView.from(requirement);
     }
 
     @Transactional
@@ -73,23 +95,69 @@ public class RequirementService {
             throw new ApiException(HttpStatus.FORBIDDEN, "项目经理只能把需求关联到自己管理的项目");
         }
         requirement.assign(assignee, project);
+        audit.log(actor, "REQUIREMENT_ASSIGNED", "REQUIREMENT", requirement.getId(), Map.of(
+            "assigneeId", assignee.getId(), "projectId", String.valueOf(request.projectId())
+        ));
+        notifications.notify(List.of(assignee), "REQUIREMENT_ASSIGNED", "需求已分派给你", requirement.getTitle(),
+            "REQUIREMENT", requirement.getId(), 0);
         return RequirementView.from(requirement);
     }
 
     @Transactional
-    public RequirementView transition(Long id, RequirementStatus status, Authentication authentication) {
+    public RequirementView transition(Long id, RequirementStatus status, String opinion, Authentication authentication) {
+        if (status == RequirementStatus.PENDING_APPROVAL) {
+            approvals.submit(id, authentication);
+            return RequirementView.from(requirements.findById(id).orElseThrow());
+        }
+        if (status == RequirementStatus.APPROVED || status == RequirementStatus.REJECTED) {
+            approvals.decide(id, new ApprovalService.DecisionRequest(
+                status == RequirementStatus.APPROVED ? ApprovalDecision.APPROVED : ApprovalDecision.REJECTED, opinion
+            ), authentication);
+            return RequirementView.from(requirements.findById(id).orElseThrow());
+        }
         UserAccount actor = current(authentication);
         Requirement requirement = requirements.findById(id).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "需求不存在"));
         RequirementStatus current = requirement.getStatus();
         boolean admin = actor.getRoles().contains(Role.ADMIN);
         boolean assignee = requirement.getAssignee() != null && requirement.getAssignee().getId().equals(actor.getId());
-        boolean allowed = (assignee && current == RequirementStatus.REFINING && status == RequirementStatus.PENDING_APPROVAL)
-            || (admin && current == RequirementStatus.PENDING_APPROVAL
-                && List.of(RequirementStatus.APPROVED, RequirementStatus.REJECTED).contains(status))
-            || ((admin || assignee) && current == RequirementStatus.REJECTED && status == RequirementStatus.REFINING);
+        boolean allowed = (admin || assignee) && current == RequirementStatus.REJECTED
+            && status == RequirementStatus.REFINING;
         if (!allowed) throw new ApiException(HttpStatus.FORBIDDEN, "不能执行此需求状态变更");
         requirement.changeStatus(status);
+        audit.log(actor, "REQUIREMENT_STATUS_CHANGED", "REQUIREMENT", requirement.getId(), Map.of(
+            "from", current.name(), "to", status.name()
+        ));
         return RequirementView.from(requirement);
+    }
+
+    @Transactional
+    public ProjectService.ProjectSummary createProject(Long id, CreateProjectFromRequirement request,
+                                                       Authentication authentication) {
+        UserAccount actor = current(authentication);
+        Requirement requirement = requirements.findById(id)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "需求不存在"));
+        if (requirement.getStatus() != RequirementStatus.APPROVED) {
+            throw new ApiException(HttpStatus.CONFLICT, "只有已批准需求可以创建项目");
+        }
+        if (requirement.getProject() != null) {
+            throw new ApiException(HttpStatus.CONFLICT, "需求已经关联项目");
+        }
+        boolean assigneeManager = requirement.getAssignee() != null
+            && requirement.getAssignee().getId().equals(actor.getId())
+            && actor.getRoles().contains(Role.PROJECT_MANAGER);
+        if (!actor.getRoles().contains(Role.ADMIN) && !assigneeManager) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "只有管理员或需求负责人可以创建项目");
+        }
+        Long customerId = requirement.getCustomer() == null ? null : requirement.getCustomer().getId();
+        ProjectService.ProjectSummary created = projectService.create(new ProjectService.CreateProject(
+            request.name(), request.description(), request.projectType(), request.priority(), request.managerId(),
+            customerId, request.plannedStartAt(), request.plannedEndAt()
+        ), authentication);
+        requirement.linkProject(projects.getReferenceById(created.id()));
+        audit.log(actor, "REQUIREMENT_LINKED_TO_PROJECT", "REQUIREMENT", requirement.getId(), Map.of(
+            "projectId", created.id()
+        ));
+        return created;
     }
 
     private UserAccount current(Authentication authentication) {
@@ -104,16 +172,21 @@ public class RequirementService {
     }
 
     public record CreateRequirement(@NotNull RequirementSource source, @NotBlank String title, String description,
-                                    @NotNull Priority priority, Long customerId) {}
+                                    @NotNull Priority priority, Long customerId, @NotNull ProjectType projectType) {}
     public record AssignRequirement(@NotNull Long assigneeId, Long projectId) {}
+    public record CreateProjectFromRequirement(@NotBlank String name, String description,
+                                               @NotNull ProjectType projectType, @NotNull Priority priority,
+                                               @NotNull Long managerId, LocalDateTime plannedStartAt,
+                                               LocalDateTime plannedEndAt) {}
     public record RequirementView(Long id, String requirementNo, RequirementSource source, String title, String description,
                                   Long submitterId, String submitterName, Long customerId, Long assigneeId,
-                                  String assigneeName, Long projectId, RequirementStatus status, Priority priority, Instant createdAt) {
+                                  String assigneeName, Long projectId, ProjectType projectType, RequirementStatus status,
+                                  Priority priority, Instant createdAt) {
         static RequirementView from(Requirement r) {
             return new RequirementView(r.getId(), r.getRequirementNo(), r.getSource(), r.getTitle(), r.getDescription(),
                 r.getSubmitter().getId(), r.getSubmitter().getDisplayName(), r.getCustomer() == null ? null : r.getCustomer().getId(),
                 r.getAssignee() == null ? null : r.getAssignee().getId(), r.getAssignee() == null ? null : r.getAssignee().getDisplayName(),
-                r.getProject() == null ? null : r.getProject().getId(), r.getStatus(), r.getPriority(), r.getCreatedAt());
+                r.getProject() == null ? null : r.getProject().getId(), r.getProjectType(), r.getStatus(), r.getPriority(), r.getCreatedAt());
         }
     }
 }

@@ -17,9 +17,109 @@ export interface UserSummary {
   id: number
   username: string
   displayName: string
+  email?: string
   userType: 'INTERNAL' | 'CUSTOMER'
   roles: Role[]
+  departmentId?: number
+  departmentName?: string
 }
+
+export interface DepartmentSummary {
+  id: number
+  name: string
+  parentId?: number
+  managerId?: number
+  managerName?: string
+}
+
+export interface DepartmentTask {
+  id: number
+  projectId: number
+  projectName: string
+  title: string
+  ownerId: number
+  ownerName: string
+  status: TaskStatus
+  plannedEndAt?: string
+}
+
+export interface DepartmentScope {
+  department?: DepartmentSummary
+  tasks: DepartmentTask[]
+}
+
+export interface AuditLog {
+  id: number
+  actorId?: number
+  actorName: string
+  action: string
+  objectType: string
+  objectId?: number
+  detailJson?: string
+  createdAt: string
+}
+
+export interface WorkflowTransition {
+  id: number
+  objectType: 'TASK' | 'REQUIREMENT'
+  fromStatus: string
+  toStatus: string
+  allowedRoles: Role[]
+  enabled: boolean
+  requiresReason: boolean
+  notificationEvent?: string
+}
+
+export interface WorkflowTemplate {
+  id: number
+  name: string
+  projectType: 'INTERNAL' | 'TEMPORARY'
+  active: boolean
+  transitions: WorkflowTransition[]
+  approvalSteps: WorkflowApprovalStep[]
+}
+
+export interface WorkflowApprovalStep {
+  id: number
+  stepOrder: number
+  name: string
+  approverRole: Role
+  active: boolean
+}
+
+export interface ApprovalAction {
+  id: number
+  stepOrder: number
+  actorName: string
+  decision: 'APPROVED' | 'REJECTED' | 'WITHDRAWN'
+  opinion?: string
+  createdAt: string
+}
+
+export interface ApprovalInstance {
+  id: number
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'WITHDRAWN'
+  currentStep: number
+  currentStepName?: string
+  submitterName: string
+  createdAt: string
+  completedAt?: string
+  actions: ApprovalAction[]
+}
+
+export interface NotificationItem {
+  id: number
+  status: 'SENT' | 'READ'
+  eventType: string
+  title: string
+  content?: string
+  objectType?: string
+  objectId?: number
+  escalationLevel: number
+  createdAt: string
+}
+
+export interface NotificationInbox { unread: number; items: NotificationItem[] }
 
 export interface ProjectSummary {
   id: number
@@ -95,6 +195,7 @@ export interface Requirement {
   assigneeId?: number
   assigneeName?: string
   projectId?: number
+  projectType: 'INTERNAL' | 'TEMPORARY'
   status: RequirementStatus
   priority: Priority
   createdAt: string

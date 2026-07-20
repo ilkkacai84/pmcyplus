@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { apiMessage, http } from '@/api/http'
+import { apiMessage, http, prepareCsrf } from '@/api/http'
 import type { DeliveryStatus, DeliveryVersion, ProjectDetails, Task, TaskStatus, UserSummary } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 
@@ -39,7 +39,7 @@ async function load() {
 async function createTask() {
   error.value = ''
   try {
-    await http.get('/auth/csrf')
+    await prepareCsrf()
     await http.post(`/projects/${route.params.id}/tasks`, { ...form, plannedStartAt: form.plannedStartAt || null, plannedEndAt: form.plannedEndAt || null })
     showTaskForm.value = false; form.title = ''; form.description = ''
     await load()
@@ -47,7 +47,7 @@ async function createTask() {
 }
 async function transition(task: Task, status: TaskStatus) {
   try {
-    await http.get('/auth/csrf')
+    await prepareCsrf()
     await http.patch(`/projects/tasks/${task.id}/status`, null, { params: { status } })
     await load()
   } catch (e) { error.value = apiMessage(e) }
@@ -66,7 +66,7 @@ async function submitWorklog() {
   if (!completionTask.value) return
   error.value = ''
   try {
-    await http.get('/auth/csrf')
+    await prepareCsrf()
     await http.post(`/projects/tasks/${completionTask.value.id}/complete`, worklog)
     completionTask.value = null
     await load()
@@ -84,7 +84,7 @@ async function submitReview() {
   if (!reviewingTask.value) return
   error.value = ''
   try {
-    await http.get('/auth/csrf')
+    await prepareCsrf()
     await http.post(`/projects/tasks/${reviewingTask.value.id}/review`, review)
     reviewingTask.value = null
     await load()

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { apiMessage, http } from '@/api/http'
+import { apiMessage, http, prepareCsrf } from '@/api/http'
 import type { ProjectSummary, UserSummary } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 
@@ -25,7 +25,7 @@ async function load() {
 async function createProject() {
   error.value = ''
   try {
-    await http.get('/auth/csrf')
+    await prepareCsrf()
     await http.post('/projects', { ...form, plannedStartAt: form.plannedStartAt || null, plannedEndAt: form.plannedEndAt || null })
     showForm.value = false
     form.name = ''; form.description = ''
