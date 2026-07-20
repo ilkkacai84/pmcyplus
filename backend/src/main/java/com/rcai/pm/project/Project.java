@@ -103,4 +103,8 @@ public class Project {
         if (status == ProjectStatus.COMPLETED) actualEndAt = LocalDateTime.now();
         this.updatedAt = Instant.now();
     }
+
+    public void updateFinancials(BigDecimal budget, BigDecimal laborCost, BigDecimal otherCost) {
+        this.budget = budget; this.laborCost = laborCost; this.otherCost = otherCost; this.updatedAt = Instant.now();
+    }
 }

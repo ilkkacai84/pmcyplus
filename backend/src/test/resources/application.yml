@@ -10,5 +10,7 @@ spring:
       ddl-auto: create-drop
     open-in-view: false
 app:
+  storage:
+    path: ${java.io.tmpdir}/pm-project-tests
   bootstrap-admin:
     enabled: false

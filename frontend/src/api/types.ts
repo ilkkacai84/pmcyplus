@@ -121,6 +121,15 @@ export interface NotificationItem {
 
 export interface NotificationInbox { unread: number; items: NotificationItem[] }
 
+export interface RiskUpdate { id: number; authorName: string; note: string; createdAt: string }
+export interface ProjectRisk {
+  id: number; title: string; description?: string; riskLevel: 'LOW'|'MEDIUM'|'HIGH'|'CRITICAL'
+  status: 'OPEN'|'MITIGATING'|'RESOLVED'|'CLOSED'; ownerId: number; ownerName: string
+  milestoneId?: number; taskId?: number; createdAt: string; updates: RiskUpdate[]
+}
+export interface DocumentVersion { id:number; versionNo:number; fileName:string; contentType?:string; fileSize:number; note?:string; uploadedBy:string; uploadedAt:string }
+export interface ProjectDocument { id:number; title:string; customerVisible:boolean; createdBy:string; createdAt:string; versions:DocumentVersion[] }
+
 export interface ProjectSummary {
   id: number
   code: string

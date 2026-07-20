@@ -102,6 +102,16 @@ public class ProjectService {
     }
 
     @Transactional
+    public ProjectDetails updateFinancials(Long projectId, UpdateFinancials request, Authentication authentication) {
+        Project project = managedProject(projectId, authentication);
+        project.updateFinancials(request.budget(), request.laborCost(), request.otherCost());
+        audit.log(authentication, "PROJECT_FINANCIALS_UPDATED", "PROJECT", projectId, Map.of(
+            "budget", request.budget(), "laborCost", request.laborCost(), "otherCost", request.otherCost()
+        ));
+        return get(projectId, authentication);
+    }
+
+    @Transactional
     public MilestoneView createMilestone(Long projectId, CreateMilestone request, Authentication authentication) {
         Project project = managedProject(projectId, authentication);
         UserAccount owner = request.ownerId() == null ? project.getManager() : user(request.ownerId());
@@ -270,6 +280,9 @@ public class ProjectService {
                              LocalDateTime plannedEndAt, @DecimalMin("0") BigDecimal estimatedHours) {}
     public record CompleteTask(@NotNull @DecimalMin("0.01") BigDecimal hours, String note, @NotNull LocalDate workedOn) {}
     public record ReviewDelivery(@NotNull DeliveryStatus decision, String opinion) {}
+    public record UpdateFinancials(@NotNull @DecimalMin("0") BigDecimal budget,
+                                   @NotNull @DecimalMin("0") BigDecimal laborCost,
+                                   @NotNull @DecimalMin("0") BigDecimal otherCost) {}
 
     public record ProjectSummary(Long id, String code, String name, ProjectType projectType, ProjectStatus status,
                                  Priority priority, Long managerId, String managerName, LocalDateTime plannedEndAt) {

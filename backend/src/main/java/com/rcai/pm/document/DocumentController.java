@@ -1,0 +1,8 @@
+package com.rcai.pm.document;
+import org.springframework.http.*; import org.springframework.security.core.Authentication; import org.springframework.web.bind.annotation.*; import org.springframework.web.multipart.MultipartFile; import java.nio.charset.StandardCharsets; import java.util.List;
+@RestController @RequestMapping("/api") public class DocumentController{
+ private final DocumentService service; public DocumentController(DocumentService s){service=s;}
+ @GetMapping("/projects/{projectId}/documents") public List<DocumentService.DocumentView> list(@PathVariable Long projectId,Authentication a){return service.list(projectId,a);}
+ @PostMapping(value="/projects/{projectId}/documents",consumes=MediaType.MULTIPART_FORM_DATA_VALUE) public DocumentService.DocumentView upload(@PathVariable Long projectId,@RequestParam(required=false) Long documentId,@RequestParam String title,@RequestParam(required=false) String note,@RequestParam(defaultValue="false") boolean customerVisible,@RequestPart MultipartFile file,Authentication a){return service.upload(projectId,documentId,title,note,customerVisible,file,a);}
+ @GetMapping("/documents/versions/{id}/download") public ResponseEntity<org.springframework.core.io.Resource> download(@PathVariable Long id,Authentication a){var d=service.download(id,a);return ResponseEntity.ok().contentType(d.contentType()==null?MediaType.APPLICATION_OCTET_STREAM:MediaType.parseMediaType(d.contentType())).header(HttpHeaders.CONTENT_DISPOSITION,ContentDisposition.attachment().filename(d.fileName(),StandardCharsets.UTF_8).build().toString()).body(d.resource());}
+}

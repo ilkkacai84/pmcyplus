@@ -3,6 +3,10 @@ package com.rcai.pm;
 import com.rcai.pm.audit.AuditService;
 import com.rcai.pm.notification.NotificationService;
 import com.rcai.pm.notification.OverdueEscalationService;
+import com.rcai.pm.risk.RiskLevel;
+import com.rcai.pm.risk.RiskService;
+import com.rcai.pm.risk.RiskStatus;
+import com.rcai.pm.document.DocumentService;
 import com.rcai.pm.project.Priority;
 import com.rcai.pm.project.DeliveryStatus;
 import com.rcai.pm.project.ProjectService;
@@ -28,6 +32,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.mock.web.MockMultipartFile;
 
 import java.util.Set;
 import java.math.BigDecimal;
@@ -61,6 +66,10 @@ class ProjectManagementApplicationTests {
     private NotificationService notifications;
     @Autowired
     private OverdueEscalationService overdueEscalations;
+    @Autowired
+    private RiskService riskService;
+    @Autowired
+    private DocumentService documentService;
 
     @Test
     void contextLoads() {
@@ -81,6 +90,11 @@ class ProjectManagementApplicationTests {
 
         assertThat(created.name()).isEqualTo("测试项目");
         assertThat(projects.get(created.id(), authentication).project().managerId()).isEqualTo(manager.getId());
+        var financials = projects.updateFinancials(created.id(), new ProjectService.UpdateFinancials(
+            BigDecimal.valueOf(100000), BigDecimal.valueOf(32000), BigDecimal.valueOf(8000)
+        ), authentication);
+        assertThat(financials.budget()).isEqualByComparingTo("100000");
+        assertThat(financials.laborCost().add(financials.otherCost())).isEqualByComparingTo("40000");
     }
 
     @Test
@@ -369,6 +383,49 @@ class ProjectManagementApplicationTests {
         assertThat(projects.get(project.id(), authentication(projectManager)).tasks().getFirst().status())
             .isEqualTo(TaskStatus.TODO);
         assertThat(task.status()).isEqualTo(TaskStatus.TODO);
+    }
+
+    @Test
+    @Transactional
+    void projectRiskKeepsLevelStatusAndTreatmentHistory() {
+        UserAccount manager = saveUser("risk-manager", "风险项目经理", UserType.INTERNAL, Role.PROJECT_MANAGER);
+        UserAccount owner = saveUser("risk-owner", "风险负责人", UserType.INTERNAL, Role.MEMBER);
+        var project = projects.create(new ProjectService.CreateProject(
+            "风险项目", null, ProjectType.INTERNAL, Priority.HIGH, manager.getId(), null, null, null
+        ), authentication(manager));
+        projects.createTask(project.id(), new ProjectService.CreateTask(
+            "风险关联任务", null, owner.getId(), null, null, Priority.HIGH, null, null, BigDecimal.TEN
+        ), authentication(manager));
+        var risk = riskService.create(project.id(), new RiskService.CreateRisk(
+            "关键人员排期冲突", "可能影响里程碑", RiskLevel.CRITICAL, owner.getId(), null, null
+        ), authentication(manager));
+        risk = riskService.update(risk.id(), new RiskService.UpdateRisk(
+            RiskLevel.HIGH, RiskStatus.MITIGATING, "已协调替补人员"
+        ), authentication(owner));
+        assertThat(risk.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(risk.status()).isEqualTo(RiskStatus.MITIGATING);
+        assertThat(risk.updates()).extracting(RiskService.UpdateView::note).containsExactly("已协调替补人员");
+    }
+
+    @Test
+    @Transactional
+    void projectDocumentsKeepImmutableVersionsAndCustomerVisibility() {
+        UserAccount manager = saveUser("document-manager", "文档项目经理", UserType.INTERNAL, Role.PROJECT_MANAGER);
+        UserAccount customer = saveUser("document-customer", "文档客户", UserType.CUSTOMER, Role.CUSTOMER);
+        var project = projects.create(new ProjectService.CreateProject(
+            "文档项目", null, ProjectType.INTERNAL, Priority.MEDIUM,
+            manager.getId(), customer.getId(), null, null
+        ), authentication(manager));
+        var first = documentService.upload(project.id(), null, "交付说明", "初始版", true,
+            new MockMultipartFile("file", "delivery.txt", "text/plain", "version-1".getBytes()),
+            authentication(manager));
+        var second = documentService.upload(project.id(), first.id(), "交付说明", "修订版", true,
+            new MockMultipartFile("file", "delivery.txt", "text/plain", "version-2".getBytes()),
+            authentication(manager));
+        assertThat(second.versions()).extracting(DocumentService.VersionView::versionNo).containsExactly(2, 1);
+        assertThat(documentService.list(project.id(), authentication(customer))).hasSize(1);
+        assertThat(documentService.download(second.versions().getFirst().id(), authentication(customer)).resource().exists())
+            .isTrue();
     }
 
     private UserAccount saveUser(String username, String displayName, UserType type, Role role) {
