@@ -35,6 +35,17 @@ const tasksByStatus = computed(() => Object.fromEntries(columns.map(column => [c
 const canManage = computed(() => !!project.value && (!!auth.user?.roles.includes('ADMIN') || project.value.project.managerId === auth.user?.id))
 const isCustomer = computed(() => auth.user?.userType === 'CUSTOMER')
 const budgetUsage = computed(() => !project.value?.budget ? 0 : ((Number(project.value.laborCost) + Number(project.value.otherCost)) / Number(project.value.budget)) * 100)
+const ganttRange = computed(() => {
+  const dates = project.value?.tasks.flatMap(task => [task.plannedStartAt, task.plannedEndAt]).filter(Boolean).map(value => new Date(value!).getTime()) ?? []
+  const min = dates.length ? Math.min(...dates) : Date.now()
+  return { min, span: Math.max((dates.length ? Math.max(...dates) : min + 86400000) - min, 86400000) }
+})
+function ganttStyle(task: Task) {
+  if (!task.plannedStartAt || !task.plannedEndAt) return { display: 'none' }
+  const left = ((new Date(task.plannedStartAt).getTime() - ganttRange.value.min) / ganttRange.value.span) * 100
+  const width = Math.max(((new Date(task.plannedEndAt).getTime() - new Date(task.plannedStartAt).getTime()) / ganttRange.value.span) * 100, 2)
+  return { left: `${left}%`, width: `${width}%` }
+}
 
 async function load() {
   const projectResult = await http.get(`/projects/${route.params.id}`)
@@ -151,6 +162,8 @@ onMounted(load)
     <div class="board-header"><div><span class="eyebrow">DOCUMENTS</span><h2>项目文档</h2></div><button v-if="canManage" class="secondary-button" @click="showDocumentForm=!showDocumentForm">＋ 上传文档</button></div>
     <form v-if="showDocumentForm" class="panel form-grid" @submit.prevent="uploadDocument"><label>更新已有文档<select v-model="documentForm.documentId"><option :value="undefined">创建新文档</option><option v-for="doc in documents" :key="doc.id" :value="doc.id">{{ doc.title }}</option></select></label><label>文档标题<input v-model="documentForm.title" required></label><label>文件<input type="file" required @change="selectFile"></label><label>版本说明<input v-model="documentForm.note"></label><label class="check-label"><input v-model="documentForm.customerVisible" type="checkbox">客户可见</label><div class="form-actions"><button class="primary-button">上传新版本</button></div></form>
     <section class="document-grid"><article v-for="doc in documents" :key="doc.id" class="panel document-card"><div><span class="eyebrow">{{ doc.customerVisible?'客户可见':'仅内部' }}</span><h3>{{ doc.title }}</h3></div><button v-for="version in doc.versions" :key="version.id" class="document-version" @click="downloadVersion(version.id,version.fileName)"><strong>v{{ version.versionNo }} · {{ version.fileName }}</strong><small>{{ version.uploadedBy }} · {{ version.note||'无版本说明' }}</small></button></article><div v-if="!documents.length" class="empty-state"><strong>暂无文档</strong><span>上传文件后会永久保留版本记录。</span></div></section>
+    <div class="board-header"><div><span class="eyebrow">GANTT</span><h2>基础甘特图</h2></div><span>计划时间与实际完成状态（只读）</span></div>
+    <section class="panel gantt"><div v-for="task in project.tasks" :key="task.id" class="gantt-row"><span :class="{child:task.parentTaskId}">{{ task.parentTaskId?'↳ ':'' }}{{ task.title }}</span><div class="gantt-track"><i class="gantt-bar" :class="{done:task.status==='COMPLETED'}" :style="ganttStyle(task)"></i></div><small>{{ task.plannedStartAt?new Date(task.plannedStartAt).toLocaleDateString():'未排期' }} → {{ task.plannedEndAt?new Date(task.plannedEndAt).toLocaleDateString():'未排期' }}</small></div><div v-if="!project.tasks.length" class="empty-state"><strong>暂无排期</strong><span>创建带开始和结束时间的任务后生成甘特图。</span></div></section>
     <form v-if="showTaskForm" class="panel form-grid" @submit.prevent="createTask">
       <label>任务名称<input v-model="form.title" required /></label><label>负责人<select v-model="form.ownerId"><option v-for="user in users" :key="user.id" :value="user.id">{{ user.displayName }}</option></select></label>
       <label>优先级<select v-model="form.priority"><option value="LOW">低</option><option value="MEDIUM">中</option><option value="HIGH">高</option><option value="URGENT">紧急</option></select></label><label>预计工时<input v-model="form.estimatedHours" type="number" min="0" step="0.5" /></label>

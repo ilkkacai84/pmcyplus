@@ -22,4 +22,11 @@ public interface TaskItemRepository extends JpaRepository<TaskItem, Long> {
     @Query("select task from TaskItem task where task.plannedEndAt < :now and task.status not in :closedStatuses " +
         "and task.mergedIntoId is null")
     List<TaskItem> findOverdue(@Param("now") LocalDateTime now, @Param("closedStatuses") List<TaskStatus> closedStatuses);
+
+    @EntityGraph(attributePaths = {"project", "owner", "owner.department"})
+    @Query("select task from TaskItem task where task.owner.id in :ownerIds and task.plannedStartAt is not null " +
+        "and task.plannedEndAt is not null and task.plannedStartAt <= :to and task.plannedEndAt >= :from " +
+        "and task.status not in :closed")
+    List<TaskItem> findResourceTasks(@Param("ownerIds") List<Long> ownerIds, @Param("from") LocalDateTime from,
+                                     @Param("to") LocalDateTime to, @Param("closed") List<TaskStatus> closed);
 }

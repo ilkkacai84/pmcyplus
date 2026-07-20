@@ -27,6 +27,8 @@ async function signOut() {
         <RouterLink to="/requirements" active-class="active"><span>◇</span> 需求中心</RouterLink>
         <RouterLink to="/projects" active-class="active"><span>▦</span> 项目中心</RouterLink>
         <RouterLink to="/notifications" active-class="active"><span>◍</span> 消息通知</RouterLink>
+        <RouterLink v-if="auth.user?.userType === 'INTERNAL'" to="/resources" active-class="active"><span>◒</span> 资源负荷</RouterLink>
+        <RouterLink v-if="auth.user?.roles.some(role => ['ADMIN','PROJECT_MANAGER','DEPARTMENT_MANAGER'].includes(role))" to="/reports" active-class="active"><span>◫</span> 数据报表</RouterLink>
         <RouterLink v-if="isDepartmentManager" to="/department" active-class="active"><span>◉</span> 部门视图</RouterLink>
         <RouterLink v-if="isAdmin" to="/users" active-class="active"><span>◎</span> 账号管理</RouterLink>
         <RouterLink v-if="isAdmin" to="/audit" active-class="active"><span>◌</span> 审计日志</RouterLink>

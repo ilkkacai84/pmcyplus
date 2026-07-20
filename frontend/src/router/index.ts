@@ -11,6 +11,8 @@ import DepartmentView from '@/views/DepartmentView.vue'
 import AuditView from '@/views/AuditView.vue'
 import WorkflowView from '@/views/WorkflowView.vue'
 import NotificationsView from '@/views/NotificationsView.vue'
+import ResourcesView from '@/views/ResourcesView.vue'
+import ReportsView from '@/views/ReportsView.vue'
 import type { Role } from '@/api/types'
 
 const router = createRouter({
@@ -29,6 +31,8 @@ const router = createRouter({
         { path: 'audit', component: AuditView, meta: { roles: ['ADMIN'] } },
         { path: 'workflows', component: WorkflowView, meta: { roles: ['ADMIN'] } },
         { path: 'notifications', component: NotificationsView },
+        { path: 'resources', component: ResourcesView, meta: { roles: ['ADMIN','PROJECT_MANAGER','DEPARTMENT_MANAGER','MEMBER'] } },
+        { path: 'reports', component: ReportsView, meta: { roles: ['ADMIN','PROJECT_MANAGER','DEPARTMENT_MANAGER'] } },
       ],
     },
   ],

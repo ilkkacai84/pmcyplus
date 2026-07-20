@@ -7,6 +7,8 @@ import com.rcai.pm.risk.RiskLevel;
 import com.rcai.pm.risk.RiskService;
 import com.rcai.pm.risk.RiskStatus;
 import com.rcai.pm.document.DocumentService;
+import com.rcai.pm.resource.ResourceService;
+import com.rcai.pm.report.ReportService;
 import com.rcai.pm.project.Priority;
 import com.rcai.pm.project.DeliveryStatus;
 import com.rcai.pm.project.ProjectService;
@@ -70,9 +72,27 @@ class ProjectManagementApplicationTests {
     private RiskService riskService;
     @Autowired
     private DocumentService documentService;
+    @Autowired
+    private ResourceService resourceService;
+    @Autowired
+    private ReportService reportService;
 
     @Test
     void contextLoads() {
+    }
+
+    @Test
+    @WithMockUser(username = "user-list-admin", roles = "ADMIN")
+    void userListLoadsRolesOutsideRepositoryTransaction() {
+        users.save(new UserAccount(
+            "user-list-admin", "unused", "列表管理员", UserType.INTERNAL, Set.of(Role.ADMIN)
+        ));
+        var authentication = UsernamePasswordAuthenticationToken.authenticated("user-list-admin", "n/a", Set.of());
+        assertThat(userController.list(authentication))
+            .anySatisfy(user -> {
+                assertThat(user.username()).isEqualTo("user-list-admin");
+                assertThat(user.roles()).contains(Role.ADMIN);
+            });
     }
 
     @Test
@@ -141,6 +161,10 @@ class ProjectManagementApplicationTests {
         assertThat(details.deliveries()).extracting(ProjectService.DeliveryView::versionNo).containsExactly(2, 1);
         assertThat(details.deliveries()).extracting(ProjectService.DeliveryView::status)
             .containsExactly(DeliveryStatus.ACCEPTED, DeliveryStatus.CHANGES_REQUESTED);
+        var report = reportService.report(LocalDate.now().minusDays(1), LocalDate.now().plusDays(1),
+            ProjectType.INTERNAL, project.id(), null, null, customer.getId(), managerAuth);
+        assertThat(report.completionRate()).isEqualByComparingTo("100.0");
+        assertThat(report.reviewedDeliveries()).isEqualTo(2);
     }
 
     @Test
@@ -426,6 +450,31 @@ class ProjectManagementApplicationTests {
         assertThat(documentService.list(project.id(), authentication(customer))).hasSize(1);
         assertThat(documentService.download(second.versions().getFirst().id(), authentication(customer)).resource().exists())
             .isTrue();
+    }
+
+    @Test
+    @Transactional
+    void resourceLoadUsesWorkCalendarCapacityAndDetectsConflict() {
+        UserAccount manager = saveUser("resource-manager", "资源项目经理", UserType.INTERNAL, Role.PROJECT_MANAGER);
+        UserAccount owner = saveUser("resource-owner", "资源成员", UserType.INTERNAL, Role.MEMBER);
+        var project = projects.create(new ProjectService.CreateProject(
+            "资源项目", null, ProjectType.INTERNAL, Priority.MEDIUM, manager.getId(), null, null, null
+        ), authentication(manager));
+        LocalDateTime start = LocalDateTime.of(2026, 7, 20, 9, 0);
+        projects.createTask(project.id(), new ProjectService.CreateTask(
+            "超负荷任务", null, owner.getId(), null, null, Priority.HIGH,
+            start, start.plusHours(8), BigDecimal.valueOf(16)
+        ), authentication(manager));
+        resourceService.saveCapacity(new ResourceService.SaveCapacity(
+            owner.getId(), start.toLocalDate(), BigDecimal.valueOf(8), "标准容量"
+        ), authentication(manager));
+
+        var report = resourceService.report(start.toLocalDate(), start.toLocalDate(), project.id(), authentication(manager));
+        var ownerLoad = report.members().stream().filter(item -> item.userId().equals(owner.getId())).findFirst().orElseThrow();
+        assertThat(ownerLoad.capacityHours()).isEqualByComparingTo("8");
+        assertThat(ownerLoad.allocatedHours()).isEqualByComparingTo("16");
+        assertThat(ownerLoad.loadRate()).isEqualByComparingTo("200.0");
+        assertThat(ownerLoad.conflict()).isTrue();
     }
 
     private UserAccount saveUser(String username, String displayName, UserType type, Role role) {

@@ -45,4 +45,8 @@ public class Worklog {
         this.workedOn = workedOn;
         this.createdAt = Instant.now();
     }
+    public UserAccount getUser() { return user; }
+    public TaskItem getTask() { return task; }
+    public BigDecimal getHours() { return hours; }
+    public LocalDate getWorkedOn() { return workedOn; }
 }

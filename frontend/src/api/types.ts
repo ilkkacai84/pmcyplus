@@ -129,6 +129,9 @@ export interface ProjectRisk {
 }
 export interface DocumentVersion { id:number; versionNo:number; fileName:string; contentType?:string; fileSize:number; note?:string; uploadedBy:string; uploadedAt:string }
 export interface ProjectDocument { id:number; title:string; customerVisible:boolean; createdBy:string; createdAt:string; versions:DocumentVersion[] }
+export interface MemberLoad { userId:number; userName:string; departmentName?:string; capacityHours:number; allocatedHours:number; actualHours:number; loadRate:number; conflict:boolean }
+export interface ResourceReport { from:string; to:string; calculationRule:string; members:MemberLoad[] }
+export interface ReportSummary { projectCount:number; taskCount:number; completionRate:number; overdueRate:number; milestoneAchievementRate:number; departmentLoad:Record<string,number>; memberHours:Record<string,number>; riskDistribution:Record<string,number>; reviewedDeliveries:number; averageAcceptanceHours:number }
 
 export interface ProjectSummary {
   id: number

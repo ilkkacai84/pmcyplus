@@ -12,10 +12,10 @@ public interface UserAccountRepository extends JpaRepository<UserAccount, Long> 
     Optional<UserAccount> findByUsernameIgnoreCase(String username);
     boolean existsByUsernameIgnoreCase(String username);
 
-    @EntityGraph(attributePaths = "department")
+    @EntityGraph(attributePaths = {"department", "roles"})
     List<UserAccount> findAllByOrderByDisplayNameAsc();
 
-    @EntityGraph(attributePaths = "department")
+    @EntityGraph(attributePaths = {"department", "roles"})
     @Query("select user from UserAccount user where user.department.id = :departmentId order by user.displayName asc")
     List<UserAccount> findDepartmentUsers(@Param("departmentId") Long departmentId);
 
