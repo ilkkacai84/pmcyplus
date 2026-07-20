@@ -44,4 +44,13 @@ public class RequirementController {
                                                            Authentication authentication) {
         return service.transition(id, status, authentication);
     }
+
+    @PostMapping("/{id}/project")
+    public com.rcai.pm.project.ProjectService.ProjectSummary createProject(
+        @PathVariable Long id,
+        @Valid @RequestBody RequirementService.CreateProjectFromRequirement request,
+        Authentication authentication
+    ) {
+        return service.createProject(id, request, authentication);
+    }
 }

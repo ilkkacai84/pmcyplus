@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { apiMessage, http } from '@/api/http'
+import { apiMessage, http, prepareCsrf } from '@/api/http'
 import type { ProjectSummary, Requirement, RequirementStatus, UserSummary } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 
@@ -10,12 +10,15 @@ const users = ref<UserSummary[]>([])
 const projects = ref<ProjectSummary[]>([])
 const showForm = ref(false)
 const assigning = ref<Requirement | null>(null)
+const creatingProject = ref<Requirement | null>(null)
 const error = ref('')
 const form = reactive({ source: 'WEB', title: '', description: '', priority: 'MEDIUM' })
 const assignment = reactive({ assigneeId: undefined as number | undefined, projectId: undefined as number | undefined })
+const projectForm = reactive({ name: '', description: '', projectType: 'INTERNAL', priority: 'MEDIUM', managerId: undefined as number | undefined, plannedStartAt: '', plannedEndAt: '' })
 const canAssign = computed(() => !!auth.user?.roles.some(role => role === 'ADMIN' || role === 'PROJECT_MANAGER'))
 const isAdmin = computed(() => !!auth.user?.roles.includes('ADMIN'))
 const internalUsers = computed(() => users.value.filter(user => user.userType === 'INTERNAL'))
+const managers = computed(() => users.value.filter(user => user.roles.some(role => role === 'ADMIN' || role === 'PROJECT_MANAGER')))
 const statusText: Record<RequirementStatus, string> = {
   UNASSIGNED: '待分派', REFINING: '完善中', PENDING_APPROVAL: '待审批', APPROVED: '已批准',
   REJECTED: '已驳回', DELIVERED: '已交付', ACCEPTED: '已验收', MERGED: '已合并',
@@ -36,7 +39,7 @@ async function load() {
 async function createRequirement() {
   error.value = ''
   try {
-    await http.get('/auth/csrf')
+    await prepareCsrf()
     await http.post('/requirements', form)
     showForm.value = false
     form.title = ''; form.description = ''
@@ -54,7 +57,7 @@ async function assignRequirement() {
   if (!assigning.value || !assignment.assigneeId) return
   error.value = ''
   try {
-    await http.get('/auth/csrf')
+    await prepareCsrf()
     await http.post(`/requirements/${assigning.value.id}/assign`, {
       assigneeId: assignment.assigneeId,
       projectId: assignment.projectId || null,
@@ -67,8 +70,33 @@ async function assignRequirement() {
 async function transition(item: Requirement, status: RequirementStatus) {
   error.value = ''
   try {
-    await http.get('/auth/csrf')
+    await prepareCsrf()
     await http.patch(`/requirements/${item.id}/status`, null, { params: { status } })
+    await load()
+  } catch (e) { error.value = apiMessage(e) }
+}
+
+function openProjectForm(item: Requirement) {
+  creatingProject.value = item
+  projectForm.name = item.title
+  projectForm.description = item.description ?? ''
+  projectForm.priority = item.priority
+  projectForm.managerId = managers.value.some(user => user.id === item.assigneeId)
+    ? item.assigneeId
+    : managers.value[0]?.id
+}
+
+async function createProject() {
+  if (!creatingProject.value || !projectForm.managerId) return
+  error.value = ''
+  try {
+    await prepareCsrf()
+    await http.post(`/requirements/${creatingProject.value.id}/project`, {
+      ...projectForm,
+      plannedStartAt: projectForm.plannedStartAt || null,
+      plannedEndAt: projectForm.plannedEndAt || null,
+    })
+    creatingProject.value = null
     await load()
   } catch (e) { error.value = apiMessage(e) }
 }
@@ -101,6 +129,18 @@ onMounted(load)
     <div class="form-actions span-2"><button type="button" class="secondary-button" @click="assigning = null">取消</button><button class="primary-button">确认分派</button></div>
   </form>
 
+  <form v-if="creatingProject" class="panel form-grid" @submit.prevent="createProject">
+    <div class="span-2"><span class="eyebrow">CREATE PROJECT</span><h2>从 {{ creatingProject.requirementNo }} 创建项目</h2></div>
+    <label>项目名称<input v-model="projectForm.name" required /></label>
+    <label>项目经理<select v-model="projectForm.managerId" required><option v-for="user in managers" :key="user.id" :value="user.id">{{ user.displayName }}</option></select></label>
+    <label>项目类型<select v-model="projectForm.projectType"><option value="INTERNAL">内部项目</option><option value="TEMPORARY">临时任务</option></select></label>
+    <label>优先级<select v-model="projectForm.priority"><option value="LOW">低</option><option value="MEDIUM">中</option><option value="HIGH">高</option><option value="URGENT">紧急</option></select></label>
+    <label>计划开始<input v-model="projectForm.plannedStartAt" type="datetime-local" /></label>
+    <label>计划结束<input v-model="projectForm.plannedEndAt" type="datetime-local" /></label>
+    <label class="span-2">项目说明<textarea v-model="projectForm.description" rows="3" /></label>
+    <div class="form-actions span-2"><button type="button" class="secondary-button" @click="creatingProject = null">取消</button><button class="primary-button">创建并关联项目</button></div>
+  </form>
+
   <p v-if="error" class="error-message page-error">{{ error }}</p>
   <section class="panel table-panel">
     <div class="table-row requirement-row table-head"><span>编号 / 需求</span><span>提交人</span><span>负责人</span><span>关联项目</span><span>状态</span><span>操作</span></div>
@@ -108,7 +148,7 @@ onMounted(load)
       <span><strong>{{ item.requirementNo }}</strong><small>{{ item.title }}</small></span>
       <span>{{ item.submitterName }}</span>
       <span>{{ item.assigneeName || '待分派' }}</span>
-      <span>{{ item.projectId ? `#${item.projectId}` : '未关联' }}</span>
+      <span><RouterLink v-if="item.projectId" class="text-link" :to="`/projects/${item.projectId}`">查看项目</RouterLink><template v-else>未关联</template></span>
       <span><i class="status-pill" :data-status="item.status">{{ statusText[item.status] }}</i></span>
       <span class="row-actions">
         <button v-if="canAssign && ['UNASSIGNED', 'REFINING', 'REJECTED'].includes(item.status)" class="inline-button" @click="openAssignment(item)">分派</button>
@@ -118,6 +158,7 @@ onMounted(load)
           <button class="inline-button danger" @click="transition(item, 'REJECTED')">驳回</button>
         </template>
         <button v-if="item.status === 'REJECTED' && (isAdmin || item.assigneeId === auth.user?.id)" class="inline-button" @click="transition(item, 'REFINING')">重新完善</button>
+        <button v-if="item.status === 'APPROVED' && !item.projectId && (isAdmin || item.assigneeId === auth.user?.id)" class="inline-button positive" @click="openProjectForm(item)">创建项目</button>
       </span>
     </div>
     <div v-if="!requirements.length" class="empty-state"><strong>需求池为空</strong><span>提交第一条需求，开始业务流程。</span></div>

@@ -4,6 +4,7 @@ import com.rcai.pm.common.ApiException;
 import com.rcai.pm.user.Role;
 import com.rcai.pm.user.UserAccount;
 import com.rcai.pm.user.UserAccountRepository;
+import com.rcai.pm.user.UserType;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -61,6 +62,12 @@ public class ProjectService {
         requireAnyRole(actor, Role.ADMIN, Role.PROJECT_MANAGER);
         UserAccount manager = request.managerId() == null ? actor : user(request.managerId());
         UserAccount customer = request.customerId() == null ? null : user(request.customerId());
+        if (!manager.getRoles().contains(Role.ADMIN) && !manager.getRoles().contains(Role.PROJECT_MANAGER)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "项目经理账号缺少项目管理角色");
+        }
+        if (customer != null && customer.getUserType() != UserType.CUSTOMER) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "项目客户必须是客户账号");
+        }
         Project project = new Project(
             uniqueProjectCode(), request.name().trim(), request.description(), request.projectType(), request.priority(),
             manager, customer, request.plannedStartAt(), request.plannedEndAt()

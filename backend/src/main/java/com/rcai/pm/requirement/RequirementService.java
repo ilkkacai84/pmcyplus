@@ -4,6 +4,8 @@ import com.rcai.pm.common.ApiException;
 import com.rcai.pm.project.Priority;
 import com.rcai.pm.project.Project;
 import com.rcai.pm.project.ProjectRepository;
+import com.rcai.pm.project.ProjectService;
+import com.rcai.pm.project.ProjectType;
 import com.rcai.pm.user.Role;
 import com.rcai.pm.user.UserAccount;
 import com.rcai.pm.user.UserAccountRepository;
@@ -16,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -25,11 +28,14 @@ public class RequirementService {
     private final RequirementRepository requirements;
     private final UserAccountRepository users;
     private final ProjectRepository projects;
+    private final ProjectService projectService;
 
-    public RequirementService(RequirementRepository requirements, UserAccountRepository users, ProjectRepository projects) {
+    public RequirementService(RequirementRepository requirements, UserAccountRepository users, ProjectRepository projects,
+                              ProjectService projectService) {
         this.requirements = requirements;
         this.users = users;
         this.projects = projects;
+        this.projectService = projectService;
     }
 
     public List<RequirementView> list(Authentication authentication) {
@@ -92,6 +98,33 @@ public class RequirementService {
         return RequirementView.from(requirement);
     }
 
+    @Transactional
+    public ProjectService.ProjectSummary createProject(Long id, CreateProjectFromRequirement request,
+                                                       Authentication authentication) {
+        UserAccount actor = current(authentication);
+        Requirement requirement = requirements.findById(id)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "需求不存在"));
+        if (requirement.getStatus() != RequirementStatus.APPROVED) {
+            throw new ApiException(HttpStatus.CONFLICT, "只有已批准需求可以创建项目");
+        }
+        if (requirement.getProject() != null) {
+            throw new ApiException(HttpStatus.CONFLICT, "需求已经关联项目");
+        }
+        boolean assigneeManager = requirement.getAssignee() != null
+            && requirement.getAssignee().getId().equals(actor.getId())
+            && actor.getRoles().contains(Role.PROJECT_MANAGER);
+        if (!actor.getRoles().contains(Role.ADMIN) && !assigneeManager) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "只有管理员或需求负责人可以创建项目");
+        }
+        Long customerId = requirement.getCustomer() == null ? null : requirement.getCustomer().getId();
+        ProjectService.ProjectSummary created = projectService.create(new ProjectService.CreateProject(
+            request.name(), request.description(), request.projectType(), request.priority(), request.managerId(),
+            customerId, request.plannedStartAt(), request.plannedEndAt()
+        ), authentication);
+        requirement.linkProject(projects.getReferenceById(created.id()));
+        return created;
+    }
+
     private UserAccount current(Authentication authentication) {
         return users.findByUsernameIgnoreCase(authentication.getName()).orElseThrow();
     }
@@ -106,6 +139,10 @@ public class RequirementService {
     public record CreateRequirement(@NotNull RequirementSource source, @NotBlank String title, String description,
                                     @NotNull Priority priority, Long customerId) {}
     public record AssignRequirement(@NotNull Long assigneeId, Long projectId) {}
+    public record CreateProjectFromRequirement(@NotBlank String name, String description,
+                                               @NotNull ProjectType projectType, @NotNull Priority priority,
+                                               @NotNull Long managerId, LocalDateTime plannedStartAt,
+                                               LocalDateTime plannedEndAt) {}
     public record RequirementView(Long id, String requirementNo, RequirementSource source, String title, String description,
                                   Long submitterId, String submitterName, Long customerId, Long assigneeId,
                                   String assigneeName, Long projectId, RequirementStatus status, Priority priority, Instant createdAt) {

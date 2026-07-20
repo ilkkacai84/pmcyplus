@@ -94,4 +94,9 @@ public class Requirement {
         this.status = status;
         this.updatedAt = Instant.now();
     }
+
+    public void linkProject(Project project) {
+        this.project = project;
+        this.updatedAt = Instant.now();
+    }
 }

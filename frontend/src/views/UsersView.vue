@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { apiMessage, http } from '@/api/http'
+import { apiMessage, http, prepareCsrf } from '@/api/http'
 import type { Role, UserSummary } from '@/api/types'
 
 const users = ref<UserSummary[]>([])
@@ -10,7 +10,7 @@ const roleOptions: { value: Role; label: string }[] = [{ value: 'ADMIN', label: 
 async function load() { users.value = (await http.get('/users')).data }
 async function createUser() {
   error.value = ''
-  try { await http.get('/auth/csrf'); await http.post('/users', form); form.username = ''; form.password = ''; form.displayName = ''; await load() }
+  try { await prepareCsrf(); await http.post('/users', form); form.username = ''; form.password = ''; form.displayName = ''; await load() }
   catch (e) { error.value = apiMessage(e) }
 }
 onMounted(load)

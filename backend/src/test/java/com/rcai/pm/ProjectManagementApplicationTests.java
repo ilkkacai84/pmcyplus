@@ -122,6 +122,14 @@ class ProjectManagementApplicationTests {
         assertThat(requirement.status()).isEqualTo(RequirementStatus.APPROVED);
 
         Long requirementId = requirement.id();
+        var linkedProject = requirements.createProject(requirementId, new RequirementService.CreateProjectFromRequirement(
+            "需求转项目", "由批准需求创建", ProjectType.INTERNAL, Priority.MEDIUM,
+            manager.getId(), null, null
+        ), adminAuth);
+        assertThat(requirements.list(adminAuth).stream()
+            .filter(item -> item.id().equals(requirementId))
+            .findFirst().orElseThrow().projectId()).isEqualTo(linkedProject.id());
+
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> requirements.transition(
             requirementId, RequirementStatus.REJECTED, submitterAuth
         )).isInstanceOf(com.rcai.pm.common.ApiException.class);
