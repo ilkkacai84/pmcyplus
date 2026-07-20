@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { apiMessage } from '@/api/http'
+import { apiMessage, http } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
+import { locale, setLocale, type Locale } from '@/i18n'
 
 const username = ref('admin')
 const password = ref('Admin@123456')
@@ -10,6 +11,7 @@ const loading = ref(false)
 const error = ref('')
 const auth = useAuthStore()
 const router = useRouter()
+const sso = ref<{ ssoEnabled: boolean; registrationId: string }>({ ssoEnabled: false, registrationId: 'corporate' })
 
 async function submit() {
   error.value = ''
@@ -23,10 +25,15 @@ async function submit() {
     loading.value = false
   }
 }
+onMounted(async () => { try { sso.value = (await http.get('/auth/options')).data } catch { /* 密码登录仍可用 */ } })
+function changeLocale(event: Event) { setLocale((event.target as HTMLSelectElement).value as Locale) }
 </script>
 
 <template>
   <main class="login-page">
+    <select class="locale-select login-locale" :value="locale" aria-label="语言" @change="changeLocale">
+      <option value="zh-CN">中文</option><option value="en-US">English</option>
+    </select>
     <section class="login-story">
       <div class="story-label">PROJECT DELIVERY OS</div>
       <h1>让每一次协作<br />都有清晰的下一步</h1>
@@ -45,6 +52,7 @@ async function submit() {
         <label>密码<input v-model="password" type="password" autocomplete="current-password" required /></label>
         <p v-if="error" class="error-message">{{ error }}</p>
         <button class="primary-button full" :disabled="loading">{{ loading ? '正在登录…' : '登录' }}</button>
+        <a v-if="sso.ssoEnabled" class="secondary-button full" :href="`/oauth2/authorization/${sso.registrationId}`">企业统一身份登录</a>
         <small class="login-hint">初始账号由管理员创建，首次启动可使用页面预填的演示管理员。</small>
       </form>
     </section>

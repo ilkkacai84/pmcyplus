@@ -38,11 +38,11 @@
 - 关键账号、组织、需求、项目、任务和验收操作审计
 - 按项目类型独立配置任务状态迁移、角色权限和顺序审批步骤
 - 审批提交、逐级通过、驳回、撤回、重新提交、意见与历史记录
-- 站内消息及邮件、企业微信、Teams 待投递队列
+- 站内消息及邮件、企业微信、Teams 实际投递、失败重试和投递状态
 - 任务逾期按 12 小时逐级催办，且不自动改变任务或验收状态
 - 项目预算、人工成本、其他费用和预算使用率
 - 风险等级、负责人、状态、高风险通知和处理记录
-- 项目文档客户授权、本地存储适配器和不可覆盖的版本历史
+- 项目文档客户授权、本地或 HTTP 外部存储适配器和不可覆盖的版本历史
 - 工作日历、节假日/调休日及成员每日可用工时覆盖
 - 成员可用工时、预计分配、实际工时、负荷率与排期冲突分析
 - 项目任务只读甘特图，直观展示计划跨度与完成状态
@@ -50,9 +50,11 @@
 - 完成率、逾期率、里程碑达成率、部门负荷、成员工时、风险分布与客户验收效率指标
 - 管理员项目、任务、需求合并预览，展示迁移范围和逐字段冲突
 - 合并关联内容、工时、交付版本和审批记录，保留只读来源、目标映射与审计记录
+- 可选 OIDC 企业统一身份登录，且只允许映射到预先创建并启用的本地账号
+- 中文、英文全局切换，语言偏好保存在当前浏览器
 - Docker Compose 私有化本地运行
 
-后续节点继续实现：外部渠道实际发送适配器、统一身份认证、外部文件存储和完整中英文切换。
+后续节点继续实现：高级流程可视化设计、更多企业文件协议适配器以及移动端/桌面端专项体验。
 
 ## 快速启动
 
@@ -94,6 +96,52 @@ npm run dev
 cd backend && mvn test
 cd frontend && npm run build
 ```
+
+## 企业集成配置
+
+所有密钥均通过部署环境变量注入，不应写入仓库。未启用的外部渠道不会影响站内消息，待投递记录会保留以便配置完成后继续发送。
+
+邮件通知：
+
+```bash
+EMAIL_ENABLED=true
+EMAIL_FROM=pm@example.com
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=pm@example.com
+SMTP_PASSWORD=change-me
+SMTP_AUTH=true
+SMTP_STARTTLS=true
+```
+
+企业微信和 Teams 使用机器人 Webhook：
+
+```bash
+WECHAT_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
+TEAMS_WEBHOOK_URL=https://example.webhook.office.com/...
+```
+
+OIDC 单点登录默认注册名为 `corporate`。系统不会自动创建用户，管理员须先创建与身份提供方用户名声明一致的启用账号：
+
+```bash
+SSO_ENABLED=true
+SSO_REGISTRATION_ID=corporate
+SSO_USERNAME_CLAIM=preferred_username
+SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_CORPORATE_CLIENT_ID=...
+SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_CORPORATE_CLIENT_SECRET=...
+SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_CORPORATE_SCOPE=openid,profile,email
+SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_CORPORATE_ISSUER_URI=https://id.example.com/...
+```
+
+文件默认写入 `FILE_STORAGE_PATH`。如企业文件服务支持以文件键为路径的原始 HTTP `PUT`/`GET`，可切换外部存储：
+
+```bash
+FILE_STORAGE_TYPE=http
+FILE_STORAGE_HTTP_BASE_URL=https://files.example.com/project-management
+FILE_STORAGE_HTTP_BEARER_TOKEN=...
+```
+
+外部存储键只允许字母、数字、点、下划线和连字符；服务应对 `PUT {base-url}/{key}` 返回 2xx，并通过同一路径的 `GET` 返回原始文件内容。
 
 ## 核心业务链路
 

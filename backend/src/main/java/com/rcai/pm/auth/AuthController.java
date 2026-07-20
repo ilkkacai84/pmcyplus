@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Value;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -29,16 +30,28 @@ public class AuthController {
     private final AuthenticationManager authenticationManager;
     private final SecurityContextRepository securityContextRepository;
     private final UserAccountRepository users;
+    private final boolean ssoEnabled;
+    private final String ssoRegistrationId;
 
-    public AuthController(AuthenticationManager authenticationManager, SecurityContextRepository securityContextRepository, UserAccountRepository users) {
+    public AuthController(AuthenticationManager authenticationManager, SecurityContextRepository securityContextRepository,
+                          UserAccountRepository users,
+                          @Value("${app.sso.enabled:false}") boolean ssoEnabled,
+                          @Value("${app.sso.registration-id:corporate}") String ssoRegistrationId) {
         this.authenticationManager = authenticationManager;
         this.securityContextRepository = securityContextRepository;
         this.users = users;
+        this.ssoEnabled = ssoEnabled;
+        this.ssoRegistrationId = ssoRegistrationId;
     }
 
     @GetMapping("/csrf")
     public Map<String, String> csrf(CsrfToken token) {
         return Map.of("token", token.getToken(), "headerName", token.getHeaderName());
+    }
+
+    @GetMapping("/options")
+    public LoginOptions options() {
+        return new LoginOptions(ssoEnabled, ssoRegistrationId);
     }
 
     @PostMapping("/login")
@@ -77,4 +90,5 @@ public class AuthController {
 
     public record LoginRequest(@NotBlank String username, @NotBlank String password) {}
     public record CurrentUser(Long id, String username, String displayName, com.rcai.pm.user.UserType userType, java.util.Set<com.rcai.pm.user.Role> roles) {}
+    public record LoginOptions(boolean ssoEnabled, String registrationId) {}
 }

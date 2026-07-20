@@ -8,4 +8,6 @@ public interface NotificationRepository extends JpaRepository<Notification, Long
     @EntityGraph(attributePaths = "recipient")
     List<Notification> findTop100ByRecipientIdAndChannelOrderByCreatedAtDesc(Long recipientId, NotificationChannel channel);
     long countByRecipientIdAndChannelAndStatus(Long recipientId, NotificationChannel channel, NotificationStatus status);
+    @EntityGraph(attributePaths = "recipient")
+    List<Notification> findTop100ByStatusOrderByCreatedAtAsc(NotificationStatus status);
 }

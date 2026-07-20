@@ -19,6 +19,10 @@ public class Notification {
     @Column(name = "escalation_level", nullable = false) private int escalationLevel;
     @Column(name = "created_at", nullable = false, updatable = false) private Instant createdAt;
     @Column(name = "read_at") private Instant readAt;
+    @Column(name = "attempt_count", nullable = false) private int attemptCount;
+    @Column(name = "last_error", length = 1000) private String lastError;
+    @Column(name = "last_attempt_at") private Instant lastAttemptAt;
+    @Column(name = "sent_at") private Instant sentAt;
 
     protected Notification() {}
     public Notification(UserAccount recipient, NotificationChannel channel, String eventType, String title,
@@ -29,10 +33,20 @@ public class Notification {
         this.status = channel == NotificationChannel.SITE ? NotificationStatus.SENT : NotificationStatus.PENDING;
     }
     public void markRead() { if (channel == NotificationChannel.SITE) { status = NotificationStatus.READ; readAt = Instant.now(); } }
+    public void markSent() { status = NotificationStatus.SENT; sentAt = Instant.now(); lastError = null; }
+    public void markAttemptFailed(Exception exception) {
+        attemptCount++;
+        lastAttemptAt = Instant.now();
+        String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+        lastError = message.length() > 1000 ? message.substring(0, 1000) : message;
+        status = attemptCount >= 3 ? NotificationStatus.FAILED : NotificationStatus.PENDING;
+    }
     public Long getId() { return id; } public UserAccount getRecipient() { return recipient; }
     public NotificationChannel getChannel() { return channel; } public NotificationStatus getStatus() { return status; }
     public String getEventType() { return eventType; } public String getTitle() { return title; }
     public String getContent() { return content; } public String getObjectType() { return objectType; }
     public Long getObjectId() { return objectId; } public int getEscalationLevel() { return escalationLevel; }
     public Instant getCreatedAt() { return createdAt; } public Instant getReadAt() { return readAt; }
+    public int getAttemptCount() { return attemptCount; } public String getLastError() { return lastError; }
+    public Instant getLastAttemptAt() { return lastAttemptAt; } public Instant getSentAt() { return sentAt; }
 }

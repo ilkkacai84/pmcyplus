@@ -2,6 +2,8 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: #f4f5ef; }
 button, input, select, textarea { font: inherit; }
+.locale-select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; color: #40554f; background: white; font-size: 11px; }
+.login-locale { position: fixed; top: 22px; right: 24px; z-index: 3; }
 button, a { -webkit-tap-highlight-color: transparent; }
 a { color: inherit; text-decoration: none; }
 .app-shell { display: flex; min-height: 100vh; }

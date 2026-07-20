@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { locale, setLocale, type Locale } from '@/i18n'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -12,6 +13,10 @@ const isDepartmentManager = computed(() => auth.user?.roles.includes('DEPARTMENT
 async function signOut() {
   await auth.logout()
   await router.push('/login')
+}
+
+function changeLocale(event: Event) {
+  setLocale((event.target as HTMLSelectElement).value as Locale)
 }
 </script>
 
@@ -45,6 +50,9 @@ async function signOut() {
         <button class="menu-button" @click="menuOpen = !menuOpen">☰</button>
         <div class="breadcrumb">企业项目协作空间</div>
         <div class="user-menu">
+          <select class="locale-select" :value="locale" aria-label="语言" @change="changeLocale">
+            <option value="zh-CN">中文</option><option value="en-US">English</option>
+          </select>
           <span class="avatar">{{ auth.user?.displayName.slice(0, 1) }}</span>
           <div><strong>{{ auth.user?.displayName }}</strong><small>{{ auth.user?.roles.join(' · ') }}</small></div>
           <button class="link-button" @click="signOut">退出</button>

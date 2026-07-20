@@ -1,13 +1,21 @@
 package com.rcai.pm;
 
 import com.rcai.pm.audit.AuditService;
+import com.rcai.pm.auth.SsoOidcUserService;
 import com.rcai.pm.common.ApiException;
 import com.rcai.pm.notification.NotificationService;
+import com.rcai.pm.notification.Notification;
+import com.rcai.pm.notification.NotificationChannel;
+import com.rcai.pm.notification.NotificationDispatcher;
+import com.rcai.pm.notification.NotificationRepository;
+import com.rcai.pm.notification.NotificationSender;
+import com.rcai.pm.notification.NotificationStatus;
 import com.rcai.pm.notification.OverdueEscalationService;
 import com.rcai.pm.risk.RiskLevel;
 import com.rcai.pm.risk.RiskService;
 import com.rcai.pm.risk.RiskStatus;
 import com.rcai.pm.document.DocumentService;
+import com.rcai.pm.document.HttpFileStorage;
 import com.rcai.pm.resource.ResourceService;
 import com.rcai.pm.report.ReportService;
 import com.rcai.pm.merge.MergeObjectType;
@@ -44,12 +52,20 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.core.oidc.OidcIdToken;
+import org.springframework.security.oauth2.core.oidc.user.DefaultOidcUser;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.Set;
 import java.util.List;
+import java.util.Map;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicReference;
+import com.sun.net.httpserver.HttpServer;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -106,6 +122,8 @@ class ProjectManagementApplicationTests {
     private JdbcTemplate jdbc;
     @Autowired
     private MergeController mergeController;
+    @Autowired
+    private SsoOidcUserService ssoUsers;
 
     @Test
     void contextLoads() {
@@ -238,6 +256,102 @@ class ProjectManagementApplicationTests {
         assertThatThrownBy(() -> mergeController.preview(new MergeController.PreviewRequest(
             MergeObjectType.PROJECT, List.of(1L), 2L
         ))).isInstanceOf(org.springframework.security.authorization.AuthorizationDeniedException.class);
+    }
+
+    @Test
+    void notificationDispatcherMarksSuccessfulDelivery() {
+        UserAccount recipient = new UserAccount(
+            "notify-user", "unused", "通知用户", UserType.INTERNAL, Set.of(Role.MEMBER)
+        );
+        Notification notification = new Notification(recipient, NotificationChannel.TEAMS,
+            "TASK_UPDATED", "任务更新", "内容", "TASK", 1L, 0);
+        NotificationSender sender = sender(NotificationChannel.TEAMS, false);
+
+        new NotificationDispatcher(null, List.of(sender)).dispatch(List.of(notification));
+
+        assertThat(notification.getStatus()).isEqualTo(NotificationStatus.SENT);
+        assertThat(notification.getSentAt()).isNotNull();
+    }
+
+    @Test
+    void notificationDispatcherStopsAfterThreeFailures() {
+        UserAccount recipient = new UserAccount(
+            "notify-failure-user", "unused", "失败通知用户", UserType.INTERNAL, Set.of(Role.MEMBER)
+        );
+        Notification notification = new Notification(recipient, NotificationChannel.WECHAT,
+            "TASK_UPDATED", "任务更新", "内容", "TASK", 1L, 0);
+        NotificationDispatcher dispatcher = new NotificationDispatcher(null,
+            List.of(sender(NotificationChannel.WECHAT, true)));
+
+        dispatcher.dispatch(List.of(notification)); dispatcher.dispatch(List.of(notification));
+        dispatcher.dispatch(List.of(notification));
+
+        assertThat(notification.getStatus()).isEqualTo(NotificationStatus.FAILED);
+        assertThat(notification.getAttemptCount()).isEqualTo(3);
+        assertThat(notification.getLastError()).contains("模拟发送失败");
+    }
+
+    @Test
+    @Transactional
+    void ssoMapsOnlyPrecreatedLocalAccountAndRoles() {
+        saveUser("oidc-admin", "统一身份管理员", UserType.INTERNAL, Role.ADMIN);
+        OidcIdToken token = new OidcIdToken("token", Instant.now(), Instant.now().plusSeconds(300), Map.of(
+            "sub", "external-123", "preferred_username", "oidc-admin"
+        ));
+        DefaultOidcUser external = new DefaultOidcUser(
+            List.of(new SimpleGrantedAuthority("OIDC_USER")), token, "preferred_username"
+        );
+
+        var mapped = ssoUsers.map(external);
+
+        assertThat(mapped.getName()).isEqualTo("oidc-admin");
+        assertThat(mapped.getAuthorities()).extracting(Object::toString).contains("ROLE_ADMIN");
+    }
+
+    @Test
+    void httpFileStorageUploadsAndDownloadsWithBearerToken() throws Exception {
+        AtomicReference<byte[]> stored = new AtomicReference<>();
+        AtomicReference<String> authorization = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/files", exchange -> {
+            authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            if (exchange.getRequestMethod().equals("PUT")) {
+                stored.set(exchange.getRequestBody().readAllBytes());
+                exchange.sendResponseHeaders(201, -1);
+            } else {
+                byte[] body = stored.get();
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            }
+            exchange.close();
+        });
+        server.start();
+        try {
+            HttpFileStorage storage = new HttpFileStorage(
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/files", "secret-token"
+            );
+            MockMultipartFile file = new MockMultipartFile(
+                "file", "proof.txt", "text/plain", "external-storage".getBytes(StandardCharsets.UTF_8)
+            );
+
+            String key = storage.save(file);
+
+            assertThat(new String(storage.load(key).getInputStream().readAllBytes(), StandardCharsets.UTF_8))
+                .isEqualTo("external-storage");
+            assertThat(authorization.get()).isEqualTo("Bearer secret-token");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private NotificationSender sender(NotificationChannel channel, boolean fail) {
+        return new NotificationSender() {
+            @Override public NotificationChannel channel() { return channel; }
+            @Override public boolean configured() { return true; }
+            @Override public void send(Notification notification) {
+                if (fail) throw new IllegalStateException("模拟发送失败");
+            }
+        };
     }
 
     @Test

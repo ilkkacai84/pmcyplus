@@ -19,6 +19,8 @@ import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.security.web.context.SecurityContextRepository;
+import org.springframework.beans.factory.annotation.Value;
+import com.rcai.pm.auth.SsoOidcUserService;
 
 @Configuration
 @EnableMethodSecurity
@@ -59,7 +61,9 @@ public class SecurityConfig {
     }
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http, SecurityContextRepository repository) throws Exception {
+    SecurityFilterChain securityFilterChain(HttpSecurity http, SecurityContextRepository repository,
+                                            SsoOidcUserService ssoUsers,
+                                            @Value("${app.sso.enabled:false}") boolean ssoEnabled) throws Exception {
         CookieCsrfTokenRepository csrfRepository = CookieCsrfTokenRepository.withHttpOnlyFalse();
         csrfRepository.setCookiePath("/");
         CsrfTokenRequestAttributeHandler csrfHandler = new CsrfTokenRequestAttributeHandler();
@@ -71,7 +75,8 @@ public class SecurityConfig {
                 .csrfTokenRepository(csrfRepository)
                 .csrfTokenRequestHandler(csrfHandler))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/auth/csrf", "/actuator/health").permitAll()
+                .requestMatchers("/api/auth/csrf", "/api/auth/options", "/actuator/health").permitAll()
+                .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
                 .anyRequest().authenticated())
             .requestCache(cache -> cache.disable())
@@ -88,6 +93,12 @@ public class SecurityConfig {
                     response.setContentType("application/json;charset=UTF-8");
                     response.getWriter().write("{\"message\":\"无权执行此操作\"}");
                 }));
+
+        if (ssoEnabled) {
+            http.oauth2Login(oauth -> oauth
+                .userInfoEndpoint(info -> info.oidcUserService(ssoUsers::loadUser))
+                .defaultSuccessUrl("/", true));
+        }
 
         return http.build();
     }
