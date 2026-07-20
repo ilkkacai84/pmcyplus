@@ -1,11 +1,14 @@
 package com.rcai.pm.project;
 
 import com.rcai.pm.audit.AuditService;
+import com.rcai.pm.notification.NotificationService;
 import com.rcai.pm.common.ApiException;
 import com.rcai.pm.user.Role;
 import com.rcai.pm.user.UserAccount;
 import com.rcai.pm.user.UserAccountRepository;
 import com.rcai.pm.user.UserType;
+import com.rcai.pm.workflow.WorkflowObjectType;
+import com.rcai.pm.workflow.WorkflowService;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -32,10 +35,13 @@ public class ProjectService {
     private final DeliveryVersionRepository deliveries;
     private final UserAccountRepository users;
     private final AuditService audit;
+    private final WorkflowService workflow;
+    private final NotificationService notifications;
 
     public ProjectService(ProjectRepository projects, ProjectMemberRepository members, MilestoneRepository milestones,
                           TaskItemRepository tasks, WorklogRepository worklogs, DeliveryVersionRepository deliveries,
-                          UserAccountRepository users, AuditService audit) {
+                          UserAccountRepository users, AuditService audit, WorkflowService workflow,
+                          NotificationService notifications) {
         this.projects = projects;
         this.members = members;
         this.milestones = milestones;
@@ -44,6 +50,8 @@ public class ProjectService {
         this.deliveries = deliveries;
         this.users = users;
         this.audit = audit;
+        this.workflow = workflow;
+        this.notifications = notifications;
     }
 
     public List<ProjectSummary> list(Authentication authentication) {
@@ -120,6 +128,8 @@ public class ProjectService {
         audit.log(authentication, "TASK_CREATED", "TASK", task.getId(), Map.of(
             "projectId", projectId, "ownerId", owner.getId()
         ));
+        notifications.notify(List.of(owner), "TASK_ASSIGNED", "新任务已分配给你", task.getTitle(),
+            "TASK", task.getId(), 0);
         return TaskView.from(task);
     }
 
@@ -135,16 +145,9 @@ public class ProjectService {
         boolean admin = actor.getRoles().contains(Role.ADMIN);
         boolean owner = task.getOwner().getId().equals(actor.getId());
         TaskStatus current = task.getStatus();
-        boolean normalTransition = (current == TaskStatus.TODO && target == TaskStatus.IN_PROGRESS)
-            || (current == TaskStatus.IN_PROGRESS && target == TaskStatus.BLOCKED)
-            || (current == TaskStatus.BLOCKED && target == TaskStatus.IN_PROGRESS);
-        boolean managementTransition = (List.of(TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED).contains(current)
-            && target == TaskStatus.CANCELLED)
-            || (current == TaskStatus.CANCELLED && target == TaskStatus.TODO)
-            || (current == TaskStatus.COMPLETED && target == TaskStatus.IN_PROGRESS);
-        boolean allowed = ((admin || manager || owner) && normalTransition)
-            || ((admin || manager) && managementTransition);
-        if (!allowed) throw new ApiException(HttpStatus.FORBIDDEN, "当前角色不能执行该状态变更");
+        if (!admin && !manager && !owner) throw new ApiException(HttpStatus.FORBIDDEN, "当前用户无权修改该任务");
+        workflow.requireTransition(task.getProject().getProjectType(), WorkflowObjectType.TASK,
+            current.name(), target.name(), actor, null);
         task.changeStatus(target);
         audit.log(actor, "TASK_STATUS_CHANGED", "TASK", taskId, Map.of(
             "from", current.name(), "to", target.name()
@@ -164,6 +167,8 @@ public class ProjectService {
         if (!List.of(TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED).contains(task.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "只有进行中或阻塞的任务可以提交交付");
         }
+        workflow.requireTransition(task.getProject().getProjectType(), WorkflowObjectType.TASK,
+            task.getStatus().name(), TaskStatus.PENDING_ACCEPTANCE.name(), actor, request.note());
         worklogs.save(new Worklog(task, actor, request.hours(), request.note(), request.workedOn()));
         task.addActualHours(request.hours());
         task.changeStatus(TaskStatus.PENDING_ACCEPTANCE);
@@ -173,6 +178,10 @@ public class ProjectService {
         audit.log(actor, "TASK_DELIVERED", "TASK", taskId, Map.of(
             "version", delivery.getVersionNo(), "hours", request.hours()
         ));
+        if (task.getProject().getCustomer() != null) {
+            notifications.notify(List.of(task.getProject().getCustomer()), "DELIVERY_SUBMITTED", "有新的交付待验收",
+                task.getTitle(), "TASK", taskId, 0);
+        }
         return TaskView.from(task);
     }
 
@@ -196,12 +205,18 @@ public class ProjectService {
         }
         DeliveryVersion delivery = deliveries.findFirstByTaskIdAndStatusOrderByVersionNoDesc(taskId, DeliveryStatus.PENDING)
             .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "未找到待验收交付版本"));
+        TaskStatus target = request.decision() == DeliveryStatus.ACCEPTED
+            ? TaskStatus.COMPLETED : TaskStatus.IN_PROGRESS;
+        workflow.requireTransition(task.getProject().getProjectType(), WorkflowObjectType.TASK,
+            task.getStatus().name(), target.name(), actor, request.opinion());
         delivery.review(request.decision(), actor, request.opinion());
-        task.changeStatus(request.decision() == DeliveryStatus.ACCEPTED ? TaskStatus.COMPLETED : TaskStatus.IN_PROGRESS);
+        task.changeStatus(target);
         audit.log(actor, "DELIVERY_REVIEWED", "TASK", taskId, Map.of(
             "version", delivery.getVersionNo(), "decision", request.decision().name(),
             "opinion", request.opinion() == null ? "" : request.opinion()
         ));
+        notifications.notify(List.of(task.getOwner(), task.getProject().getManager()), "DELIVERY_REVIEWED",
+            "客户已完成交付验收", request.decision().name(), "TASK", taskId, 0);
         return DeliveryView.from(delivery);
     }
 

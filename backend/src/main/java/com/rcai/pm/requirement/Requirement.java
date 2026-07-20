@@ -2,6 +2,7 @@ package com.rcai.pm.requirement;
 
 import com.rcai.pm.project.Priority;
 import com.rcai.pm.project.Project;
+import com.rcai.pm.project.ProjectType;
 import com.rcai.pm.user.UserAccount;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -44,6 +45,9 @@ public class Requirement {
     @JoinColumn(name = "project_id")
     private Project project;
     @Enumerated(EnumType.STRING)
+    @Column(name = "project_type", nullable = false)
+    private ProjectType projectType;
+    @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private RequirementStatus status = RequirementStatus.UNASSIGNED;
     @Enumerated(EnumType.STRING)
@@ -58,7 +62,7 @@ public class Requirement {
     protected Requirement() {}
 
     public Requirement(String requirementNo, RequirementSource source, String title, String description,
-                       UserAccount submitter, UserAccount customer, Priority priority) {
+                       UserAccount submitter, UserAccount customer, Priority priority, ProjectType projectType) {
         this.requirementNo = requirementNo;
         this.source = source;
         this.title = title;
@@ -66,6 +70,7 @@ public class Requirement {
         this.submitter = submitter;
         this.customer = customer;
         this.priority = priority;
+        this.projectType = projectType;
         this.createdAt = Instant.now();
         this.updatedAt = createdAt;
     }
@@ -79,6 +84,7 @@ public class Requirement {
     public UserAccount getCustomer() { return customer; }
     public UserAccount getAssignee() { return assignee; }
     public Project getProject() { return project; }
+    public ProjectType getProjectType() { return projectType; }
     public RequirementStatus getStatus() { return status; }
     public Priority getPriority() { return priority; }
     public Instant getCreatedAt() { return createdAt; }
@@ -86,6 +92,7 @@ public class Requirement {
     public void assign(UserAccount assignee, Project project) {
         this.assignee = assignee;
         this.project = project;
+        if (project != null) this.projectType = project.getProjectType();
         this.status = RequirementStatus.REFINING;
         this.updatedAt = Instant.now();
     }

@@ -26,9 +26,11 @@ async function signOut() {
         <RouterLink to="/" exact-active-class="active"><span>◫</span> 工作台</RouterLink>
         <RouterLink to="/requirements" active-class="active"><span>◇</span> 需求中心</RouterLink>
         <RouterLink to="/projects" active-class="active"><span>▦</span> 项目中心</RouterLink>
+        <RouterLink to="/notifications" active-class="active"><span>◍</span> 消息通知</RouterLink>
         <RouterLink v-if="isDepartmentManager" to="/department" active-class="active"><span>◉</span> 部门视图</RouterLink>
         <RouterLink v-if="isAdmin" to="/users" active-class="active"><span>◎</span> 账号管理</RouterLink>
         <RouterLink v-if="isAdmin" to="/audit" active-class="active"><span>◌</span> 审计日志</RouterLink>
+        <RouterLink v-if="isAdmin" to="/workflows" active-class="active"><span>⌘</span> 流程模板</RouterLink>
       </nav>
       <div class="sidebar-note">
         <strong>第一版 MVP</strong>

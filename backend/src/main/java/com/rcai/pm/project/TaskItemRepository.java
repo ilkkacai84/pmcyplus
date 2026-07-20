@@ -17,4 +17,9 @@ public interface TaskItemRepository extends JpaRepository<TaskItem, Long> {
     @Query("select task from TaskItem task where task.owner.department.id = :departmentId " +
         "and task.mergedIntoId is null order by task.plannedEndAt asc")
     List<TaskItem> findDepartmentTasks(@Param("departmentId") Long departmentId);
+
+    @EntityGraph(attributePaths = {"project", "project.manager", "owner", "owner.department", "owner.department.manager"})
+    @Query("select task from TaskItem task where task.plannedEndAt < :now and task.status not in :closedStatuses " +
+        "and task.mergedIntoId is null")
+    List<TaskItem> findOverdue(@Param("now") LocalDateTime now, @Param("closedStatuses") List<TaskStatus> closedStatuses);
 }

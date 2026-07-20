@@ -1,12 +1,16 @@
 package com.rcai.pm;
 
 import com.rcai.pm.audit.AuditService;
+import com.rcai.pm.notification.NotificationService;
+import com.rcai.pm.notification.OverdueEscalationService;
 import com.rcai.pm.project.Priority;
 import com.rcai.pm.project.DeliveryStatus;
 import com.rcai.pm.project.ProjectService;
 import com.rcai.pm.project.ProjectType;
 import com.rcai.pm.project.TaskStatus;
 import com.rcai.pm.requirement.RequirementService;
+import com.rcai.pm.requirement.ApprovalDecision;
+import com.rcai.pm.requirement.ApprovalService;
 import com.rcai.pm.requirement.RequirementSource;
 import com.rcai.pm.requirement.RequirementStatus;
 import com.rcai.pm.user.Role;
@@ -17,6 +21,7 @@ import com.rcai.pm.user.UserAccount;
 import com.rcai.pm.user.UserAccountRepository;
 import com.rcai.pm.user.UserController;
 import com.rcai.pm.user.UserType;
+import com.rcai.pm.workflow.WorkflowService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -27,6 +32,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.Set;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -46,6 +53,14 @@ class ProjectManagementApplicationTests {
     private UserController userController;
     @Autowired
     private AuditService audit;
+    @Autowired
+    private WorkflowService workflow;
+    @Autowired
+    private ApprovalService approvals;
+    @Autowired
+    private NotificationService notifications;
+    @Autowired
+    private OverdueEscalationService overdueEscalations;
 
     @Test
     void contextLoads() {
@@ -125,14 +140,14 @@ class ProjectManagementApplicationTests {
         var submitterAuth = authentication(submitter);
 
         var requirement = requirements.create(new RequirementService.CreateRequirement(
-            RequirementSource.WEB, "审批链路需求", "验证状态机", Priority.MEDIUM, null
+            RequirementSource.WEB, "审批链路需求", "验证状态机", Priority.MEDIUM, null, ProjectType.INTERNAL
         ), submitterAuth);
         requirement = requirements.assign(requirement.id(), new RequirementService.AssignRequirement(manager.getId(), null), managerAuth);
         assertThat(requirement.status()).isEqualTo(RequirementStatus.REFINING);
 
-        requirement = requirements.transition(requirement.id(), RequirementStatus.PENDING_APPROVAL, managerAuth);
+        requirement = requirements.transition(requirement.id(), RequirementStatus.PENDING_APPROVAL, null, managerAuth);
         assertThat(requirement.status()).isEqualTo(RequirementStatus.PENDING_APPROVAL);
-        requirement = requirements.transition(requirement.id(), RequirementStatus.APPROVED, adminAuth);
+        requirement = requirements.transition(requirement.id(), RequirementStatus.APPROVED, "审批通过", adminAuth);
         assertThat(requirement.status()).isEqualTo(RequirementStatus.APPROVED);
 
         Long requirementId = requirement.id();
@@ -145,11 +160,11 @@ class ProjectManagementApplicationTests {
             .findFirst().orElseThrow().projectId()).isEqualTo(linkedProject.id());
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> requirements.transition(
-            requirementId, RequirementStatus.REJECTED, submitterAuth
+            requirementId, RequirementStatus.REJECTED, "无权驳回", submitterAuth
         )).isInstanceOf(com.rcai.pm.common.ApiException.class);
 
         assertThat(audit.list()).extracting(AuditService.AuditView::action)
-            .contains("REQUIREMENT_CREATED", "REQUIREMENT_ASSIGNED", "REQUIREMENT_STATUS_CHANGED",
+            .contains("REQUIREMENT_CREATED", "REQUIREMENT_ASSIGNED", "APPROVAL_SUBMITTED", "APPROVAL_DECIDED",
                 "PROJECT_CREATED", "REQUIREMENT_LINKED_TO_PROJECT");
     }
 
@@ -224,6 +239,136 @@ class ProjectManagementApplicationTests {
         assertThat(userController.list(departmentAuth))
             .extracting(UserController.UserSummary::username)
             .containsExactlyInAnyOrder("scope-department-manager", "scope-delivery-member");
+    }
+
+    @Test
+    @Transactional
+    void projectTypeWorkflowConfigurationControlsTaskTransitions() {
+        UserAccount manager = saveUser("workflow-manager", "流程项目经理", UserType.INTERNAL, Role.PROJECT_MANAGER);
+        UserAccount member = saveUser("workflow-member", "流程项目成员", UserType.INTERNAL, Role.MEMBER);
+        UserAccount admin = saveUser("workflow-admin", "流程管理员", UserType.INTERNAL, Role.ADMIN);
+        var project = projects.create(new ProjectService.CreateProject(
+            "流程配置项目", null, ProjectType.INTERNAL, Priority.MEDIUM,
+            manager.getId(), null, null, null
+        ), authentication(manager));
+        var task = projects.createTask(project.id(), new ProjectService.CreateTask(
+            "受流程控制的任务", null, member.getId(), null, null, Priority.MEDIUM,
+            null, null, BigDecimal.ONE
+        ), authentication(manager));
+
+        var internalTemplate = workflow.list().stream()
+            .filter(template -> template.projectType() == ProjectType.INTERNAL).findFirst().orElseThrow();
+        var startTransition = internalTemplate.transitions().stream()
+            .filter(item -> item.fromStatus().equals(TaskStatus.TODO.name())
+                && item.toStatus().equals(TaskStatus.IN_PROGRESS.name()))
+            .findFirst().orElseThrow();
+        workflow.update(startTransition.id(), new WorkflowService.ConfigureTransition(
+            Set.of(Role.ADMIN), true, false, "TASK_STARTED"
+        ), authentication(admin));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> projects.transitionTask(
+            task.id(), TaskStatus.IN_PROGRESS, authentication(member)
+        )).isInstanceOf(com.rcai.pm.common.ApiException.class);
+        assertThat(projects.transitionTask(task.id(), TaskStatus.IN_PROGRESS, authentication(admin)).status())
+            .isEqualTo(TaskStatus.IN_PROGRESS);
+        assertThat(workflow.list()).extracting(WorkflowService.TemplateView::projectType)
+            .containsExactly(ProjectType.INTERNAL, ProjectType.TEMPORARY);
+    }
+
+    @Test
+    @Transactional
+    void sequentialApprovalSupportsWithdrawRejectAndResubmit() {
+        UserAccount manager = saveUser("approval-manager", "审批需求负责人", UserType.INTERNAL, Role.PROJECT_MANAGER);
+        UserAccount admin = saveUser("approval-admin", "一级审批人", UserType.INTERNAL, Role.ADMIN);
+        UserAccount departmentManager = saveUser(
+            "approval-department-manager", "二级审批人", UserType.INTERNAL, Role.DEPARTMENT_MANAGER
+        );
+        UserAccount submitter = saveUser("approval-submitter", "审批提交人", UserType.INTERNAL, Role.MEMBER);
+        var temporaryTemplate = workflow.list().stream()
+            .filter(template -> template.projectType() == ProjectType.TEMPORARY).findFirst().orElseThrow();
+        workflow.addApprovalStep(temporaryTemplate.id(), new WorkflowService.SaveApprovalStep(
+            "部门负责人复核", Role.DEPARTMENT_MANAGER, true
+        ), authentication(admin));
+
+        var requirement = requirements.create(new RequirementService.CreateRequirement(
+            RequirementSource.WEB, "两级审批需求", null, Priority.HIGH, null, ProjectType.TEMPORARY
+        ), authentication(submitter));
+        requirement = requirements.assign(requirement.id(), new RequirementService.AssignRequirement(
+            manager.getId(), null
+        ), authentication(manager));
+        Long requirementId = requirement.id();
+
+        approvals.submit(requirementId, authentication(manager));
+        approvals.withdraw(requirementId, new ApprovalService.OpinionRequest("补充信息后重新提交"), authentication(manager));
+        assertThat(requirements.list(authentication(manager)).stream()
+            .filter(item -> item.id().equals(requirementId)).findFirst().orElseThrow().status())
+            .isEqualTo(RequirementStatus.REFINING);
+
+        approvals.submit(requirementId, authentication(manager));
+        var afterFirstApproval = approvals.decide(requirementId, new ApprovalService.DecisionRequest(
+            ApprovalDecision.APPROVED, "一级通过"
+        ), authentication(admin));
+        assertThat(afterFirstApproval.currentStep()).isEqualTo(2);
+        assertThat(afterFirstApproval.status()).isEqualTo(com.rcai.pm.requirement.ApprovalStatus.PENDING);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> approvals.decide(
+            requirementId, new ApprovalService.DecisionRequest(ApprovalDecision.REJECTED, null),
+            authentication(departmentManager)
+        )).isInstanceOf(com.rcai.pm.common.ApiException.class);
+        approvals.decide(requirementId, new ApprovalService.DecisionRequest(
+            ApprovalDecision.REJECTED, "需要补充排期"
+        ), authentication(departmentManager));
+
+        approvals.submit(requirementId, authentication(manager));
+        approvals.decide(requirementId, new ApprovalService.DecisionRequest(
+            ApprovalDecision.APPROVED, "一级再次通过"
+        ), authentication(admin));
+        approvals.decide(requirementId, new ApprovalService.DecisionRequest(
+            ApprovalDecision.APPROVED, "二级通过"
+        ), authentication(departmentManager));
+
+        assertThat(requirements.list(authentication(manager)).stream()
+            .filter(item -> item.id().equals(requirementId)).findFirst().orElseThrow().status())
+            .isEqualTo(RequirementStatus.APPROVED);
+        assertThat(approvals.history(requirementId, authentication(manager))).hasSize(3);
+    }
+
+    @Test
+    @Transactional
+    void overdueTasksEscalateEveryTwelveHoursWithoutChangingStatus() {
+        UserAccount projectManager = saveUser("escalation-pm", "催办项目经理", UserType.INTERNAL, Role.PROJECT_MANAGER);
+        UserAccount departmentManager = saveUser(
+            "escalation-department-manager", "催办部门负责人", UserType.INTERNAL, Role.DEPARTMENT_MANAGER
+        );
+        UserAccount admin = saveUser("escalation-admin", "催办管理员", UserType.INTERNAL, Role.ADMIN);
+        var departmentView = departments.create(new DepartmentService.SaveDepartment(
+            "催办测试部门", null, departmentManager.getId()
+        ));
+        Department department = departmentRepository.findById(departmentView.id()).orElseThrow();
+        UserAccount owner = users.save(new UserAccount(
+            "escalation-owner", "unused", "催办任务负责人", null,
+            UserType.INTERNAL, Set.of(Role.MEMBER), department
+        ));
+        LocalDateTime now = LocalDateTime.of(2026, 7, 20, 12, 0);
+        var project = projects.create(new ProjectService.CreateProject(
+            "催办测试项目", null, ProjectType.INTERNAL, Priority.HIGH,
+            projectManager.getId(), null, null, null
+        ), authentication(projectManager));
+        var task = projects.createTask(project.id(), new ProjectService.CreateTask(
+            "已逾期任务", null, owner.getId(), null, null, Priority.HIGH,
+            now.minusDays(2), now.minusHours(25), BigDecimal.TEN
+        ), authentication(projectManager));
+
+        assertThat(overdueEscalations.process(now, Instant.parse("2026-07-20T04:00:00Z"))).isEqualTo(1);
+        assertThat(overdueEscalations.process(now, Instant.parse("2026-07-20T04:01:00Z"))).isZero();
+        assertThat(notifications.inbox(authentication(departmentManager)).items())
+            .extracting(NotificationService.NotificationView::escalationLevel).contains(3);
+
+        assertThat(overdueEscalations.process(now.plusHours(12), Instant.parse("2026-07-20T16:00:00Z"))).isEqualTo(1);
+        assertThat(notifications.inbox(authentication(admin)).items())
+            .extracting(NotificationService.NotificationView::escalationLevel).contains(4);
+        assertThat(projects.get(project.id(), authentication(projectManager)).tasks().getFirst().status())
+            .isEqualTo(TaskStatus.TODO);
+        assertThat(task.status()).isEqualTo(TaskStatus.TODO);
     }
 
     private UserAccount saveUser(String username, String displayName, UserType type, Role role) {

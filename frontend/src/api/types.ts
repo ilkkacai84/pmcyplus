@@ -59,6 +59,68 @@ export interface AuditLog {
   createdAt: string
 }
 
+export interface WorkflowTransition {
+  id: number
+  objectType: 'TASK' | 'REQUIREMENT'
+  fromStatus: string
+  toStatus: string
+  allowedRoles: Role[]
+  enabled: boolean
+  requiresReason: boolean
+  notificationEvent?: string
+}
+
+export interface WorkflowTemplate {
+  id: number
+  name: string
+  projectType: 'INTERNAL' | 'TEMPORARY'
+  active: boolean
+  transitions: WorkflowTransition[]
+  approvalSteps: WorkflowApprovalStep[]
+}
+
+export interface WorkflowApprovalStep {
+  id: number
+  stepOrder: number
+  name: string
+  approverRole: Role
+  active: boolean
+}
+
+export interface ApprovalAction {
+  id: number
+  stepOrder: number
+  actorName: string
+  decision: 'APPROVED' | 'REJECTED' | 'WITHDRAWN'
+  opinion?: string
+  createdAt: string
+}
+
+export interface ApprovalInstance {
+  id: number
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'WITHDRAWN'
+  currentStep: number
+  currentStepName?: string
+  submitterName: string
+  createdAt: string
+  completedAt?: string
+  actions: ApprovalAction[]
+}
+
+export interface NotificationItem {
+  id: number
+  status: 'SENT' | 'READ'
+  eventType: string
+  title: string
+  content?: string
+  objectType?: string
+  objectId?: number
+  escalationLevel: number
+  createdAt: string
+}
+
+export interface NotificationInbox { unread: number; items: NotificationItem[] }
+
 export interface ProjectSummary {
   id: number
   code: string
@@ -133,6 +195,7 @@ export interface Requirement {
   assigneeId?: number
   assigneeName?: string
   projectId?: number
+  projectType: 'INTERNAL' | 'TEMPORARY'
   status: RequirementStatus
   priority: Priority
   createdAt: string

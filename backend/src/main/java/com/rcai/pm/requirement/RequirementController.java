@@ -17,9 +17,11 @@ import java.util.List;
 @RequestMapping("/api/requirements")
 public class RequirementController {
     private final RequirementService service;
+    private final ApprovalService approvals;
 
-    public RequirementController(RequirementService service) {
+    public RequirementController(RequirementService service, ApprovalService approvals) {
         this.service = service;
+        this.approvals = approvals;
     }
 
     @GetMapping
@@ -41,8 +43,33 @@ public class RequirementController {
 
     @PatchMapping("/{id}/status")
     public RequirementService.RequirementView transition(@PathVariable Long id, @RequestParam RequirementStatus status,
+                                                           @RequestParam(required = false) String opinion,
                                                            Authentication authentication) {
-        return service.transition(id, status, authentication);
+        return service.transition(id, status, opinion, authentication);
+    }
+
+    @PostMapping("/{id}/approval/submit")
+    public ApprovalService.ApprovalView submitApproval(@PathVariable Long id, Authentication authentication) {
+        return approvals.submit(id, authentication);
+    }
+
+    @PostMapping("/{id}/approval/decision")
+    public ApprovalService.ApprovalView decide(@PathVariable Long id,
+                                               @Valid @RequestBody ApprovalService.DecisionRequest request,
+                                               Authentication authentication) {
+        return approvals.decide(id, request, authentication);
+    }
+
+    @PostMapping("/{id}/approval/withdraw")
+    public ApprovalService.ApprovalView withdraw(@PathVariable Long id,
+                                                 @RequestBody ApprovalService.OpinionRequest request,
+                                                 Authentication authentication) {
+        return approvals.withdraw(id, request, authentication);
+    }
+
+    @GetMapping("/{id}/approvals")
+    public List<ApprovalService.ApprovalView> approvalHistory(@PathVariable Long id, Authentication authentication) {
+        return approvals.history(id, authentication);
     }
 
     @PostMapping("/{id}/project")

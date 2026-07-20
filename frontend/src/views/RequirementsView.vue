@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { apiMessage, http, prepareCsrf } from '@/api/http'
-import type { ProjectSummary, Requirement, RequirementStatus, UserSummary } from '@/api/types'
+import type { ApprovalInstance, ProjectSummary, Requirement, RequirementStatus, UserSummary } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
@@ -11,8 +11,13 @@ const projects = ref<ProjectSummary[]>([])
 const showForm = ref(false)
 const assigning = ref<Requirement | null>(null)
 const creatingProject = ref<Requirement | null>(null)
+const reviewing = ref<Requirement | null>(null)
+const reviewDecision = ref<'APPROVED' | 'REJECTED'>('APPROVED')
+const reviewOpinion = ref('')
+const approvalHistory = ref<ApprovalInstance[]>([])
+const historyRequirement = ref<Requirement | null>(null)
 const error = ref('')
-const form = reactive({ source: 'WEB', title: '', description: '', priority: 'MEDIUM' })
+const form = reactive({ source: 'WEB', title: '', description: '', priority: 'MEDIUM', projectType: 'INTERNAL' })
 const assignment = reactive({ assigneeId: undefined as number | undefined, projectId: undefined as number | undefined })
 const projectForm = reactive({ name: '', description: '', projectType: 'INTERNAL', priority: 'MEDIUM', managerId: undefined as number | undefined, plannedStartAt: '', plannedEndAt: '' })
 const canAssign = computed(() => !!auth.user?.roles.some(role => role === 'ADMIN' || role === 'PROJECT_MANAGER'))
@@ -102,7 +107,37 @@ async function createProject() {
 }
 
 function canSubmitApproval(item: Requirement) {
-  return item.status === 'REFINING' && item.assigneeId === auth.user?.id
+  return ['REFINING', 'REJECTED'].includes(item.status) && item.assigneeId === auth.user?.id
+}
+
+async function submitApproval(item: Requirement) {
+  try { await prepareCsrf(); await http.post(`/requirements/${item.id}/approval/submit`); await load() }
+  catch (e) { error.value = apiMessage(e) }
+}
+
+function openReview(item: Requirement, decision: 'APPROVED' | 'REJECTED') {
+  reviewing.value = item; reviewDecision.value = decision; reviewOpinion.value = ''
+}
+
+async function decideApproval() {
+  if (!reviewing.value) return
+  try {
+    await prepareCsrf()
+    await http.post(`/requirements/${reviewing.value.id}/approval/decision`, {
+      decision: reviewDecision.value, opinion: reviewOpinion.value || null,
+    })
+    reviewing.value = null; await load()
+  } catch (e) { error.value = apiMessage(e) }
+}
+
+async function withdrawApproval(item: Requirement) {
+  try { await prepareCsrf(); await http.post(`/requirements/${item.id}/approval/withdraw`, { opinion: '需求负责人撤回' }); await load() }
+  catch (e) { error.value = apiMessage(e) }
+}
+
+async function showHistory(item: Requirement) {
+  try { approvalHistory.value = (await http.get(`/requirements/${item.id}/approvals`)).data; historyRequirement.value = item }
+  catch (e) { error.value = apiMessage(e) }
 }
 
 onMounted(load)
@@ -118,9 +153,21 @@ onMounted(load)
     <label>需求标题<input v-model="form.title" required /></label>
     <label>来源<select v-model="form.source"><option value="WEB">系统表单</option><option value="EMAIL">邮件</option><option value="WECHAT">企业微信</option><option value="MOBILE">移动端</option></select></label>
     <label>优先级<select v-model="form.priority"><option value="LOW">低</option><option value="MEDIUM">中</option><option value="HIGH">高</option><option value="URGENT">紧急</option></select></label>
+    <label>项目类型<select v-model="form.projectType"><option value="INTERNAL">内部项目</option><option value="TEMPORARY">临时任务</option></select></label>
     <label class="span-2">详细说明<textarea v-model="form.description" rows="4" /></label>
     <div class="form-actions span-2"><button type="button" class="secondary-button" @click="showForm = false">取消</button><button class="primary-button">提交到需求池</button></div>
   </form>
+
+  <form v-if="reviewing" class="panel form-grid" @submit.prevent="decideApproval">
+    <div class="span-2"><span class="eyebrow">APPROVAL DECISION</span><h2>{{ reviewDecision === 'APPROVED' ? '批准' : '驳回' }} {{ reviewing.requirementNo }}</h2></div>
+    <label class="span-2">审批意见<textarea v-model="reviewOpinion" rows="3" :required="reviewDecision === 'REJECTED'" /></label>
+    <div class="form-actions span-2"><button type="button" class="secondary-button" @click="reviewing = null">取消</button><button class="primary-button">确认提交</button></div>
+  </form>
+
+  <section v-if="historyRequirement" class="panel approval-history">
+    <div class="approval-config-title"><div><span class="eyebrow">APPROVAL HISTORY</span><h2>{{ historyRequirement.requirementNo }} 审批记录</h2></div><button class="inline-button" @click="historyRequirement = null">关闭</button></div>
+    <article v-for="instance in approvalHistory" :key="instance.id" class="approval-history-item"><strong>第 {{ instance.id }} 次 · {{ instance.status }}</strong><small>提交人 {{ instance.submitterName }} · 当前步骤 {{ instance.currentStepName || instance.currentStep }}</small><p v-for="action in instance.actions" :key="action.id">{{ action.actorName }}：{{ action.decision }}<template v-if="action.opinion"> · {{ action.opinion }}</template></p></article>
+  </section>
 
   <form v-if="assigning" class="panel form-grid" @submit.prevent="assignRequirement">
     <div class="span-2"><span class="eyebrow">ASSIGN REQUIREMENT</span><h2>分派 {{ assigning.requirementNo }} · {{ assigning.title }}</h2></div>
@@ -152,13 +199,15 @@ onMounted(load)
       <span><i class="status-pill" :data-status="item.status">{{ statusText[item.status] }}</i></span>
       <span class="row-actions">
         <button v-if="canAssign && ['UNASSIGNED', 'REFINING', 'REJECTED'].includes(item.status)" class="inline-button" @click="openAssignment(item)">分派</button>
-        <button v-if="canSubmitApproval(item)" class="inline-button" @click="transition(item, 'PENDING_APPROVAL')">提交审批</button>
-        <template v-if="isAdmin && item.status === 'PENDING_APPROVAL'">
-          <button class="inline-button positive" @click="transition(item, 'APPROVED')">批准</button>
-          <button class="inline-button danger" @click="transition(item, 'REJECTED')">驳回</button>
+        <button v-if="canSubmitApproval(item)" class="inline-button" @click="submitApproval(item)">{{ item.status === 'REJECTED' ? '重新提交' : '提交审批' }}</button>
+        <template v-if="auth.user?.userType === 'INTERNAL' && item.status === 'PENDING_APPROVAL'">
+          <button class="inline-button positive" @click="openReview(item, 'APPROVED')">批准</button>
+          <button class="inline-button danger" @click="openReview(item, 'REJECTED')">驳回</button>
         </template>
+        <button v-if="item.status === 'PENDING_APPROVAL' && (isAdmin || item.assigneeId === auth.user?.id)" class="inline-button" @click="withdrawApproval(item)">撤回</button>
         <button v-if="item.status === 'REJECTED' && (isAdmin || item.assigneeId === auth.user?.id)" class="inline-button" @click="transition(item, 'REFINING')">重新完善</button>
         <button v-if="item.status === 'APPROVED' && !item.projectId && (isAdmin || item.assigneeId === auth.user?.id)" class="inline-button positive" @click="openProjectForm(item)">创建项目</button>
+        <button v-if="item.status !== 'UNASSIGNED'" class="inline-button" @click="showHistory(item)">审批记录</button>
       </span>
     </div>
     <div v-if="!requirements.length" class="empty-state"><strong>需求池为空</strong><span>提交第一条需求，开始业务流程。</span></div>

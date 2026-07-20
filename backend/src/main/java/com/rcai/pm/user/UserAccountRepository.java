@@ -18,4 +18,7 @@ public interface UserAccountRepository extends JpaRepository<UserAccount, Long> 
     @EntityGraph(attributePaths = "department")
     @Query("select user from UserAccount user where user.department.id = :departmentId order by user.displayName asc")
     List<UserAccount> findDepartmentUsers(@Param("departmentId") Long departmentId);
+
+    @Query("select distinct user from UserAccount user join user.roles role where role = :role and user.enabled = true")
+    List<UserAccount> findEnabledByRole(@Param("role") Role role);
 }
