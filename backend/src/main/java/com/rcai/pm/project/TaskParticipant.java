@@ -44,6 +44,7 @@ public class TaskParticipant {
 
     public Long getTaskId() { return taskId; }
     public Long getUserId() { return userId; }
+    public UserAccount getUser() { return user; }
     public String getParticipantType() { return participantType; }
     public BigDecimal getPlannedHours() { return plannedHours; }
 }

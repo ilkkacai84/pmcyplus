@@ -58,6 +58,16 @@ public class WorkflowService {
         return transition;
     }
 
+    public List<AllowedTransition> allowedTransitions(ProjectType projectType, WorkflowObjectType objectType,
+                                                       String fromStatus, UserAccount actor) {
+        return transitions.findByTemplateProjectTypeAndObjectTypeAndFromStatusOrderByToStatus(
+            projectType, objectType, fromStatus).stream()
+            .filter(WorkflowTransition::isEnabled)
+            .filter(transition -> actor.getRoles().stream().anyMatch(transition.getAllowedRoles()::contains))
+            .map(transition -> new AllowedTransition(transition.getToStatus(), transition.isRequiresReason()))
+            .toList();
+    }
+
     @Transactional
     public TransitionView update(Long id, ConfigureTransition request, Authentication authentication) {
         WorkflowTransition transition = transitions.findById(id)
@@ -95,6 +105,7 @@ public class WorkflowService {
 
     public record ConfigureTransition(@NotEmpty Set<Role> allowedRoles, boolean enabled, boolean requiresReason,
                                       String notificationEvent) {}
+    public record AllowedTransition(String toStatus, boolean requiresReason) {}
     public record TemplateView(Long id, String name, ProjectType projectType, boolean active,
                                List<TransitionView> transitions, List<ApprovalStepView> approvalSteps) {}
     public record TransitionView(Long id, WorkflowObjectType objectType, String fromStatus, String toStatus,

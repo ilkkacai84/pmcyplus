@@ -2,6 +2,7 @@ package com.rcai.pm;
 
 import com.rcai.pm.audit.AuditService;
 import com.rcai.pm.auth.SsoOidcUserService;
+import com.rcai.pm.auth.LoginAttemptService;
 import com.rcai.pm.common.ApiException;
 import com.rcai.pm.notification.NotificationService;
 import com.rcai.pm.notification.Notification;
@@ -28,6 +29,7 @@ import com.rcai.pm.project.ProjectService;
 import com.rcai.pm.project.ProjectType;
 import com.rcai.pm.project.TaskStatus;
 import com.rcai.pm.project.TaskItemRepository;
+import com.rcai.pm.project.TaskParticipantRepository;
 import com.rcai.pm.project.Worklog;
 import com.rcai.pm.project.WorklogRepository;
 import com.rcai.pm.project.DeliveryVersion;
@@ -37,6 +39,7 @@ import com.rcai.pm.requirement.ApprovalDecision;
 import com.rcai.pm.requirement.ApprovalService;
 import com.rcai.pm.requirement.RequirementSource;
 import com.rcai.pm.requirement.RequirementStatus;
+import com.rcai.pm.requirement.ExternalIntakeService;
 import com.rcai.pm.requirement.RequirementRepository;
 import com.rcai.pm.user.Role;
 import com.rcai.pm.user.Department;
@@ -74,7 +77,7 @@ import java.time.Instant;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@SpringBootTest
+@SpringBootTest(properties = {"app.intake.enabled=true", "app.intake.token=test-intake-token"})
 class ProjectManagementApplicationTests {
     @Autowired
     private UserAccountRepository users;
@@ -113,6 +116,8 @@ class ProjectManagementApplicationTests {
     @Autowired
     private TaskItemRepository taskItems;
     @Autowired
+    private TaskParticipantRepository taskParticipants;
+    @Autowired
     private WorklogRepository worklogRepository;
     @Autowired
     private DeliveryVersionRepository deliveryRepository;
@@ -124,9 +129,45 @@ class ProjectManagementApplicationTests {
     private MergeController mergeController;
     @Autowired
     private SsoOidcUserService ssoUsers;
+    @Autowired
+    private ExternalIntakeService intake;
 
     @Test
     void contextLoads() {
+    }
+
+    @Test
+    void repeatedLoginFailuresAreTemporarilyLockedAndCanBeCleared() {
+        LoginAttemptService service = new LoginAttemptService(2, 15);
+        service.recordFailure("LockedUser", "127.0.0.1");
+        service.checkAllowed("lockeduser", "127.0.0.1");
+        service.recordFailure("lockeduser", "127.0.0.1");
+        assertThatThrownBy(() -> service.checkAllowed("LOCKEDUSER", "127.0.0.1"))
+            .isInstanceOf(ApiException.class).hasMessageContaining("失败次数过多");
+        service.clear("lockeduser", "127.0.0.1");
+        service.checkAllowed("lockeduser", "127.0.0.1");
+    }
+
+    @Test
+    @Transactional
+    void externalEmailAndWechatIntakeEnterTheUnassignedPool() {
+        UserAccount customer = users.save(new UserAccount("intake-customer", "hash", "接入客户",
+            "intake@example.com", UserType.CUSTOMER, Set.of(Role.CUSTOMER), null));
+        var email = intake.receive(RequirementSource.EMAIL, new ExternalIntakeService.IntakeRequest(
+            customer.getUsername(), "邮件需求", "邮件正文", Priority.HIGH, ProjectType.INTERNAL
+        ), "test-intake-token");
+        var wechat = intake.receive(RequirementSource.WECHAT, new ExternalIntakeService.IntakeRequest(
+            customer.getUsername(), "企业微信需求", "入口正文", Priority.MEDIUM, ProjectType.TEMPORARY
+        ), "test-intake-token");
+
+        assertThat(email.status()).isEqualTo(RequirementStatus.UNASSIGNED);
+        assertThat(email.source()).isEqualTo(RequirementSource.EMAIL);
+        assertThat(email.customerId()).isEqualTo(customer.getId());
+        assertThat(wechat.source()).isEqualTo(RequirementSource.WECHAT);
+        assertThatThrownBy(() -> intake.receive(RequirementSource.EMAIL,
+            new ExternalIntakeService.IntakeRequest(customer.getUsername(), "非法请求", null,
+                Priority.LOW, ProjectType.INTERNAL), "wrong-token"))
+            .isInstanceOf(ApiException.class).hasMessageContaining("凭证无效");
     }
 
     @Test
@@ -432,6 +473,7 @@ class ProjectManagementApplicationTests {
         UserAccount manager = saveUser("requirement-manager", "需求经理", UserType.INTERNAL, Role.PROJECT_MANAGER);
         UserAccount admin = saveUser("requirement-admin", "审批管理员", UserType.INTERNAL, Role.ADMIN);
         UserAccount submitter = saveUser("requirement-member", "需求提交人", UserType.INTERNAL, Role.MEMBER);
+        UserAccount watcher = saveUser("requirement-watcher", "指定通知人", UserType.INTERNAL, Role.MEMBER);
         var managerAuth = authentication(manager);
         var adminAuth = authentication(admin);
         var submitterAuth = authentication(submitter);
@@ -439,7 +481,8 @@ class ProjectManagementApplicationTests {
         var requirement = requirements.create(new RequirementService.CreateRequirement(
             RequirementSource.WEB, "审批链路需求", "验证状态机", Priority.MEDIUM, null, ProjectType.INTERNAL
         ), submitterAuth);
-        requirement = requirements.assign(requirement.id(), new RequirementService.AssignRequirement(manager.getId(), null), managerAuth);
+        requirement = requirements.assign(requirement.id(), new RequirementService.AssignRequirement(
+            manager.getId(), null, Set.of(watcher.getId())), managerAuth);
         assertThat(requirement.status()).isEqualTo(RequirementStatus.REFINING);
 
         requirement = requirements.transition(requirement.id(), RequirementStatus.PENDING_APPROVAL, null, managerAuth);
@@ -455,6 +498,10 @@ class ProjectManagementApplicationTests {
         assertThat(requirements.list(adminAuth).stream()
             .filter(item -> item.id().equals(requirementId))
             .findFirst().orElseThrow().projectId()).isEqualTo(linkedProject.id());
+        assertThat(notifications.inbox(authentication(watcher)).items())
+            .extracting(NotificationService.NotificationView::eventType)
+            .contains("REQUIREMENT_ASSIGNED", "APPROVAL_PENDING", "APPROVAL_COMPLETED",
+                "REQUIREMENT_LINKED_TO_PROJECT");
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> requirements.transition(
             requirementId, RequirementStatus.REJECTED, "无权驳回", submitterAuth
@@ -560,14 +607,20 @@ class ProjectManagementApplicationTests {
                 && item.toStatus().equals(TaskStatus.IN_PROGRESS.name()))
             .findFirst().orElseThrow();
         workflow.update(startTransition.id(), new WorkflowService.ConfigureTransition(
-            Set.of(Role.ADMIN), true, false, "TASK_STARTED"
+            Set.of(Role.ADMIN), true, true, "CUSTOM_TASK_STARTED"
         ), authentication(admin));
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> projects.transitionTask(
             task.id(), TaskStatus.IN_PROGRESS, authentication(member)
         )).isInstanceOf(com.rcai.pm.common.ApiException.class);
-        assertThat(projects.transitionTask(task.id(), TaskStatus.IN_PROGRESS, authentication(admin)).status())
+        assertThat(projects.get(project.id(), authentication(admin)).tasks().getFirst().allowedTransitions().stream()
+            .filter(action -> action.toStatus().equals(TaskStatus.IN_PROGRESS.name())).findFirst().orElseThrow().requiresReason()).isTrue();
+        assertThatThrownBy(() -> projects.transitionTask(task.id(), TaskStatus.IN_PROGRESS, authentication(admin)))
+            .isInstanceOf(ApiException.class).hasMessageContaining("必须填写原因");
+        assertThat(projects.transitionTask(task.id(), TaskStatus.IN_PROGRESS, "管理员确认启动", authentication(admin)).status())
             .isEqualTo(TaskStatus.IN_PROGRESS);
+        assertThat(notifications.inbox(authentication(manager)).items())
+            .extracting(NotificationService.NotificationView::eventType).contains("CUSTOM_TASK_STARTED");
         assertThat(workflow.list()).extracting(WorkflowService.TemplateView::projectType)
             .containsExactly(ProjectType.INTERNAL, ProjectType.TEMPORARY);
     }
@@ -734,6 +787,51 @@ class ProjectManagementApplicationTests {
         assertThat(ownerLoad.allocatedHours()).isEqualByComparingTo("16");
         assertThat(ownerLoad.loadRate()).isEqualByComparingTo("200.0");
         assertThat(ownerLoad.conflict()).isTrue();
+    }
+
+    @Test
+    @Transactional
+    void taskPersistsOwnerAndSelectedParticipants() {
+        UserAccount manager = saveUser("participant-manager", "参与人经理", UserType.INTERNAL, Role.PROJECT_MANAGER);
+        UserAccount owner = saveUser("participant-owner", "任务负责人", UserType.INTERNAL, Role.MEMBER);
+        UserAccount participant = saveUser("participant-member", "任务参与人", UserType.INTERNAL, Role.MEMBER);
+        var project = projects.create(new ProjectService.CreateProject(
+            "参与人项目", null, ProjectType.INTERNAL, Priority.MEDIUM, manager.getId(), null, null, null
+        ), authentication(manager));
+
+        var task = projects.createTask(project.id(), new ProjectService.CreateTask(
+            "多人任务", null, owner.getId(), null, null, Priority.MEDIUM,
+            null, null, BigDecimal.valueOf(8), Set.of(participant.getId())
+        ), authentication(manager));
+
+        assertThat(task.participantIds()).containsExactlyInAnyOrder(owner.getId(), participant.getId());
+        assertThat(task.participantNames()).containsExactlyInAnyOrder(owner.getDisplayName(), participant.getDisplayName());
+        assertThat(taskParticipants.findByTaskIdOrderByUserId(task.id())).hasSize(2);
+        assertThat(projects.get(project.id(), authentication(participant)).project().id()).isEqualTo(project.id());
+        assertThat(projects.transitionTask(task.id(), TaskStatus.IN_PROGRESS, authentication(participant)).status())
+            .isEqualTo(TaskStatus.IN_PROGRESS);
+        assertThat(projects.transitionTask(task.id(), TaskStatus.BLOCKED, authentication(participant)).status())
+            .isEqualTo(TaskStatus.BLOCKED);
+    }
+
+    @Test
+    @Transactional
+    void completedMilestoneUpdatesActualTimeAndReportRate() {
+        UserAccount manager = saveUser("milestone-manager", "里程碑经理", UserType.INTERNAL, Role.PROJECT_MANAGER);
+        var auth = authentication(manager);
+        var project = projects.create(new ProjectService.CreateProject(
+            "里程碑项目", null, ProjectType.INTERNAL, Priority.MEDIUM, manager.getId(), null, null, null
+        ), auth);
+        var milestone = projects.createMilestone(project.id(), new ProjectService.CreateMilestone(
+            "首个里程碑", manager.getId(), LocalDateTime.now().plusDays(2)
+        ), auth);
+
+        var completed = projects.changeMilestoneStatus(milestone.id(), com.rcai.pm.project.ProjectStatus.COMPLETED, auth);
+        var report = reportService.report(LocalDate.now().minusDays(1), LocalDate.now().plusDays(3),
+            ProjectType.INTERNAL, project.id(), null, null, null, auth);
+
+        assertThat(completed.actualAt()).isNotNull();
+        assertThat(report.milestoneAchievementRate()).isEqualByComparingTo("100.0");
     }
 
     private UserAccount saveUser(String username, String displayName, UserType type, Role role) {

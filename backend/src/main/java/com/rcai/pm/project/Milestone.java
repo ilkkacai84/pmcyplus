@@ -58,4 +58,10 @@ public class Milestone {
     public LocalDateTime getPlannedAt() { return plannedAt; }
     public LocalDateTime getActualAt() { return actualAt; }
     public ProjectStatus getStatus() { return status; }
+    public void changeStatus(ProjectStatus status) {
+        this.status = status;
+        if (status == ProjectStatus.COMPLETED && actualAt == null) actualAt = LocalDateTime.now();
+        if (status != ProjectStatus.COMPLETED) actualAt = null;
+        updatedAt = Instant.now();
+    }
 }

@@ -12,13 +12,16 @@ const users = ref<UserSummary[]>([])
 const risks = ref<ProjectRisk[]>([])
 const documents = ref<ProjectDocument[]>([])
 const showTaskForm = ref(false)
+const showMilestoneForm = ref(false)
 const showFinancialForm = ref(false)
 const showRiskForm = ref(false)
 const showDocumentForm = ref(false)
 const completionTask = ref<Task | null>(null)
+const completionRequiresReason = ref(false)
 const reviewingTask = ref<Task | null>(null)
 const error = ref('')
-const form = reactive({ title: '', description: '', ownerId: undefined as number | undefined, priority: 'MEDIUM', estimatedHours: 8, plannedStartAt: '', plannedEndAt: '' })
+const form = reactive({ title: '', description: '', ownerId: undefined as number | undefined, participantIds: [] as number[], milestoneId: undefined as number|undefined, parentTaskId: undefined as number|undefined, priority: 'MEDIUM', estimatedHours: 8, plannedStartAt: '', plannedEndAt: '' })
+const milestoneForm = reactive({ name: '', ownerId: undefined as number|undefined, plannedAt: '' })
 const worklog = reactive({ hours: 0, note: '', workedOn: new Date().toISOString().slice(0, 10) })
 const review = reactive({ decision: 'ACCEPTED' as DeliveryStatus, opinion: '' })
 const financials = reactive({ budget: 0, laborCost: 0, otherCost: 0 })
@@ -30,6 +33,7 @@ const columns: { status: TaskStatus; title: string; hint: string }[] = [
   { status: 'BLOCKED', title: '阻塞', hint: '需要协调' },
   { status: 'PENDING_ACCEPTANCE', title: '待验收', hint: '等待确认' },
   { status: 'COMPLETED', title: '已完成', hint: '交付通过' },
+  { status: 'CANCELLED', title: '已取消', hint: '已停止执行' },
 ]
 const tasksByStatus = computed(() => Object.fromEntries(columns.map(column => [column.status, project.value?.tasks.filter(task => task.status === column.status) ?? []])))
 const canManage = computed(() => !!project.value && project.value.project.status !== 'MERGED' && (!!auth.user?.roles.includes('ADMIN') || project.value.project.managerId === auth.user?.id))
@@ -91,22 +95,43 @@ async function createTask() {
     await load()
   } catch (e) { error.value = apiMessage(e) }
 }
-async function transition(task: Task, status: TaskStatus) {
+async function createMilestone() {
   try {
     await prepareCsrf()
-    await http.patch(`/projects/tasks/${task.id}/status`, null, { params: { status } })
+    await http.post(`/projects/${route.params.id}/milestones`, {
+      ...milestoneForm, ownerId: milestoneForm.ownerId || null, plannedAt: milestoneForm.plannedAt || null,
+    })
+    showMilestoneForm.value = false; milestoneForm.name = ''; await load()
+  } catch (e) { error.value = apiMessage(e) }
+}
+async function changeMilestoneStatus(id:number,status:string) {
+  try { await prepareCsrf(); await http.patch(`/projects/milestones/${id}/status`, null, { params:{status} }); await load() }
+  catch (e) { error.value = apiMessage(e) }
+}
+async function transition(task: Task, status: TaskStatus, reason?:string) {
+  try {
+    await prepareCsrf()
+    await http.patch(`/projects/tasks/${task.id}/status`, null, { params: { status, reason:reason || undefined } })
     await load()
   } catch (e) { error.value = apiMessage(e) }
 }
-function runAction(task: Task) {
-  if (task.status === 'IN_PROGRESS') {
+async function changeProjectStatus(status:string) {
+  try { await prepareCsrf(); await http.patch(`/projects/${route.params.id}/status`, null, {params:{status}}); await load() }
+  catch(e){ error.value=apiMessage(e) }
+}
+function runAction(task: Task, action: {status?:TaskStatus;complete?:boolean;requiresReason?:boolean}) {
+  if (action.complete) {
     completionTask.value = task
+    completionRequiresReason.value = !!action.requiresReason
     worklog.hours = Math.max(Number(task.estimatedHours) - Number(task.actualHours), 0.5)
     worklog.note = ''
     return
   }
-  const action = nextAction(task)
-  if (action) transition(task, action.status)
+  if (action.status) {
+    const reason = action.requiresReason ? window.prompt('请填写状态变更原因') : undefined
+    if (action.requiresReason && !reason) return
+    transition(task, action.status, reason || undefined)
+  }
 }
 async function submitWorklog() {
   if (!completionTask.value) return
@@ -136,12 +161,15 @@ async function submitReview() {
     await load()
   } catch (e) { error.value = apiMessage(e) }
 }
-function nextAction(task: Task): { status: TaskStatus; label: string } | null {
-  const isOwner = task.ownerId === auth.user?.id
-  if (task.status === 'TODO' && (canManage.value || isOwner)) return { status: 'IN_PROGRESS', label: '开始' }
-  if (task.status === 'IN_PROGRESS' && (canManage.value || isOwner)) return { status: 'PENDING_ACCEPTANCE', label: '提交' }
-  if (task.status === 'BLOCKED' && (canManage.value || isOwner)) return { status: 'IN_PROGRESS', label: '解除阻塞' }
-  return null
+function taskActions(task: Task): { status?: TaskStatus; complete?: boolean; label: string; danger?:boolean;requiresReason?:boolean }[] {
+  const participant = task.participantIds.includes(auth.user?.id ?? -1)
+  if (!canManage.value && !participant) return []
+  return task.allowedTransitions.filter(action => !['COMPLETED'].includes(action.toStatus)).map(action => ({
+    status:action.toStatus,
+    complete:action.toStatus==='PENDING_ACCEPTANCE',
+    label:action.toStatus==='IN_PROGRESS' ? (task.status==='TODO'?'开始':task.status==='BLOCKED'?'解除阻塞':'重新打开') : action.toStatus==='BLOCKED'?'标记阻塞':action.toStatus==='CANCELLED'?'取消任务':'提交验收',
+    danger:action.toStatus==='CANCELLED', requiresReason:action.requiresReason,
+  }))
 }
 onMounted(load)
 </script>
@@ -151,12 +179,19 @@ onMounted(load)
     <RouterLink v-if="project.project.mergedIntoId" :to="`/projects/${project.project.mergedIntoId}`" class="success-message merged-banner">该来源项目已合并并设为只读，点击前往目标项目 →</RouterLink>
     <div class="project-hero">
       <RouterLink to="/projects" class="back-link">← 返回项目</RouterLink>
-      <div class="project-hero-row"><div><span class="code">{{ project.project.code }}</span><h1>{{ project.project.name }}</h1><p>{{ project.description || '暂无项目说明' }}</p></div><div class="row-actions"><button v-if="canManage" class="secondary-button" @click="showFinancialForm = !showFinancialForm">维护预算</button><button v-if="canManage" class="primary-button" @click="showTaskForm = !showTaskForm">＋ 新建任务</button></div></div>
+      <div class="project-hero-row"><div><span class="code">{{ project.project.code }}</span><h1>{{ project.project.name }}</h1><p>{{ project.description || '暂无项目说明' }}</p></div><div class="row-actions"><select v-if="canManage" :value="project.project.status" @change="changeProjectStatus(($event.target as HTMLSelectElement).value)"><option value="DRAFT">草稿</option><option value="ACTIVE">进行中</option><option value="BLOCKED">阻塞</option><option value="COMPLETED">已完成</option><option value="CANCELLED">已取消</option></select><button v-if="canManage" class="secondary-button" @click="showFinancialForm = !showFinancialForm">维护预算</button><button v-if="canManage" class="secondary-button" @click="showMilestoneForm = !showMilestoneForm">＋ 创建里程碑</button><button v-if="canManage" class="primary-button" @click="showTaskForm = !showTaskForm">＋ 新建任务</button></div></div>
       <div class="hero-meta"><span>项目经理 <strong>{{ project.project.managerName }}</strong></span><span>状态 <strong>{{ project.project.status }}</strong></span><span>预算 <strong>¥{{ Number(project.budget).toLocaleString() }}</strong></span><span>人工成本 <strong>¥{{ Number(project.laborCost).toLocaleString() }}</strong></span><span>其他费用 <strong>¥{{ Number(project.otherCost).toLocaleString() }}</strong></span><span>预算使用率 <strong>{{ budgetUsage.toFixed(1) }}%</strong></span><span>任务 <strong>{{ project.tasks.length }}</strong></span></div>
     </div>
     <form v-if="showFinancialForm" class="panel form-grid" @submit.prevent="saveFinancials">
       <label>项目预算<input v-model.number="financials.budget" type="number" min="0" step="0.01" required></label><label>人工成本<input v-model.number="financials.laborCost" type="number" min="0" step="0.01" required></label><label>其他费用<input v-model.number="financials.otherCost" type="number" min="0" step="0.01" required></label><div class="form-actions"><button class="primary-button">保存财务数据</button></div>
     </form>
+    <form v-if="showMilestoneForm" class="panel form-grid" @submit.prevent="createMilestone">
+      <label>里程碑名称<input v-model="milestoneForm.name" required></label>
+      <label>负责人<select v-model="milestoneForm.ownerId"><option :value="undefined">项目经理</option><option v-for="user in users" :key="user.id" :value="user.id">{{ user.displayName }}</option></select></label>
+      <label>目标日期时间<input v-model="milestoneForm.plannedAt" type="datetime-local"></label>
+      <div class="form-actions"><button type="button" class="secondary-button" @click="showMilestoneForm=false">取消</button><button class="primary-button">保存里程碑</button></div>
+    </form>
+    <section v-if="project.milestones.length" class="panel milestone-list"><article v-for="milestone in project.milestones" :key="milestone.id"><strong>{{ milestone.name }}</strong><span>{{ milestone.ownerName || '未分配' }} · 完成率 {{ milestone.completionRate }}%</span><small>{{ milestone.plannedAt ? new Date(milestone.plannedAt).toLocaleString() : '未设截止时间' }}</small><select v-if="canManage" :value="milestone.status" @change="changeMilestoneStatus(milestone.id,($event.target as HTMLSelectElement).value)"><option value="DRAFT">草稿</option><option value="ACTIVE">进行中</option><option value="BLOCKED">阻塞</option><option value="COMPLETED">已完成</option><option value="CANCELLED">已取消</option></select><i v-else class="status-pill">{{ milestone.status }}</i></article></section>
     <div v-if="!isCustomer" class="board-header"><div><span class="eyebrow">RISKS & ISSUES</span><h2>风险与问题</h2></div><button v-if="canManage" class="secondary-button" @click="showRiskForm=!showRiskForm">＋ 新增风险</button></div>
     <form v-if="showRiskForm" class="panel form-grid" @submit.prevent="createRisk"><label>风险标题<input v-model="riskForm.title" required></label><label>负责人<select v-model="riskForm.ownerId"><option v-for="user in users" :key="user.id" :value="user.id">{{ user.displayName }}</option></select></label><label>风险等级<select v-model="riskForm.riskLevel"><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>CRITICAL</option></select></label><label class="span-2">描述<textarea v-model="riskForm.description"></textarea></label><div class="form-actions span-2"><button class="primary-button">保存风险</button></div></form>
     <section v-if="!isCustomer" class="panel table-panel"><div class="table-row risk-row table-head"><span>风险</span><span>等级</span><span>负责人</span><span>状态</span><span>操作</span></div><div v-for="risk in risks" :key="risk.id" class="table-row risk-row"><span><strong>{{ risk.title }}</strong><small>{{ risk.description }}</small></span><span><i class="status-pill" :data-status="risk.riskLevel">{{ risk.riskLevel }}</i></span><span>{{ risk.ownerName }}</span><span>{{ risk.status }}</span><span><button v-if="canManage||risk.ownerId===auth.user?.id" class="inline-button" :disabled="risk.status==='CLOSED'" @click="advanceRisk(risk)">推进处理</button></span></div><div v-if="!risks.length" class="empty-state"><strong>暂无风险</strong><span>项目执行中的风险和问题会显示在这里。</span></div></section>
@@ -167,6 +202,9 @@ onMounted(load)
     <section class="panel gantt"><div v-for="task in project.tasks" :key="task.id" class="gantt-row"><span :class="{child:task.parentTaskId}">{{ task.parentTaskId?'↳ ':'' }}{{ task.title }}</span><div class="gantt-track"><i class="gantt-bar" :class="{done:task.status==='COMPLETED'}" :style="ganttStyle(task)"></i></div><small>{{ task.plannedStartAt?new Date(task.plannedStartAt).toLocaleDateString():'未排期' }} → {{ task.plannedEndAt?new Date(task.plannedEndAt).toLocaleDateString():'未排期' }}</small></div><div v-if="!project.tasks.length" class="empty-state"><strong>暂无排期</strong><span>创建带开始和结束时间的任务后生成甘特图。</span></div></section>
     <form v-if="showTaskForm" class="panel form-grid" @submit.prevent="createTask">
       <label>任务名称<input v-model="form.title" required /></label><label>负责人<select v-model="form.ownerId"><option v-for="user in users" :key="user.id" :value="user.id">{{ user.displayName }}</option></select></label>
+      <label class="span-2">参与人<select v-model="form.participantIds" multiple><option v-for="user in users.filter(item => item.id !== form.ownerId)" :key="user.id" :value="user.id">{{ user.displayName }} · {{ user.departmentName || '未设置部门' }}</option></select></label>
+      <label>所属里程碑<select v-model="form.milestoneId"><option :value="undefined">暂不关联</option><option v-for="milestone in project.milestones" :key="milestone.id" :value="milestone.id">{{ milestone.name }}</option></select></label>
+      <label>上级任务<select v-model="form.parentTaskId"><option :value="undefined">无（顶级任务）</option><option v-for="task in project.tasks" :key="task.id" :value="task.id">{{ task.title }}</option></select></label>
       <label>优先级<select v-model="form.priority"><option value="LOW">低</option><option value="MEDIUM">中</option><option value="HIGH">高</option><option value="URGENT">紧急</option></select></label><label>预计工时<input v-model="form.estimatedHours" type="number" min="0" step="0.5" /></label>
       <label>计划开始<input v-model="form.plannedStartAt" type="datetime-local" /></label><label>计划结束<input v-model="form.plannedEndAt" type="datetime-local" /></label>
       <label class="span-2">说明<textarea v-model="form.description" rows="2" /></label><p v-if="error" class="error-message span-2">{{ error }}</p>
@@ -176,7 +214,7 @@ onMounted(load)
     <form v-if="completionTask" class="panel form-grid worklog-form" @submit.prevent="submitWorklog">
       <div class="span-2"><span class="eyebrow">COMPLETE TASK</span><h2>提交“{{ completionTask.title }}”的完成工时</h2></div>
       <label>实际工时<input v-model="worklog.hours" type="number" min="0.01" step="0.5" required /></label><label>工作日期<input v-model="worklog.workedOn" type="date" required /></label>
-      <label class="span-2">工作说明<textarea v-model="worklog.note" rows="2" /></label>
+      <label class="span-2">工作说明<textarea v-model="worklog.note" rows="2" :required="completionRequiresReason" /></label>
       <div class="form-actions span-2"><button type="button" class="secondary-button" @click="completionTask = null">取消</button><button class="primary-button">提交验收</button></div>
     </form>
     <form v-if="reviewingTask" class="panel form-grid review-form" @submit.prevent="submitReview">
@@ -191,11 +229,12 @@ onMounted(load)
         <article v-for="task in tasksByStatus[column.status]" :key="task.id" class="task-card">
           <div class="task-priority" :data-priority="task.priority">{{ task.priority }}</div><h3>{{ task.title }}</h3><p>{{ task.description || '暂无说明' }}</p>
           <div class="task-meta"><span class="avatar small">{{ task.ownerName.slice(0, 1) }}</span><span>{{ task.ownerName }}</span><span>{{ task.estimatedHours }}h</span></div>
+          <small v-if="task.participantNames.length > 1">参与人：{{ task.participantNames.filter(name => name !== task.ownerName).join('、') }}</small>
           <div v-if="latestDelivery(task.id)" class="delivery-note">
             <strong>交付 v{{ latestDelivery(task.id)!.versionNo }} · {{ latestDelivery(task.id)!.status }}</strong>
             <span v-if="latestDelivery(task.id)!.reviewOpinion">{{ latestDelivery(task.id)!.reviewOpinion }}</span>
           </div>
-          <button v-if="nextAction(task)" class="task-action" @click="runAction(task)">{{ nextAction(task)!.label }} →</button>
+          <div v-if="taskActions(task).length" class="row-actions"><button v-for="action in taskActions(task)" :key="action.label" class="task-action" :class="{danger:action.danger}" @click="runAction(task,action)">{{ action.label }} →</button></div>
           <div v-if="task.status === 'PENDING_ACCEPTANCE' && isCustomer" class="review-actions">
             <button class="task-action positive" @click="openReview(task, 'ACCEPTED')">通过</button>
             <button class="task-action danger" @click="openReview(task, 'REJECTED')">驳回</button>

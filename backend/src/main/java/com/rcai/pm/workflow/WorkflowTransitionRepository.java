@@ -14,5 +14,10 @@ public interface WorkflowTransitionRepository extends JpaRepository<WorkflowTran
     );
 
     @EntityGraph(attributePaths = {"template", "allowedRoles"})
+    List<WorkflowTransition> findByTemplateProjectTypeAndObjectTypeAndFromStatusOrderByToStatus(
+        ProjectType projectType, WorkflowObjectType objectType, String fromStatus
+    );
+
+    @EntityGraph(attributePaths = {"template", "allowedRoles"})
     List<WorkflowTransition> findByTemplateIdOrderByObjectTypeAscFromStatusAscToStatusAsc(Long templateId);
 }

@@ -157,7 +157,9 @@ export interface Milestone {
   ownerId?: number
   ownerName?: string
   plannedAt?: string
+  actualAt?: string
   status: ProjectStatus
+  completionRate: number
 }
 
 export interface Task {
@@ -175,6 +177,9 @@ export interface Task {
   estimatedHours: number
   actualHours: number
   mergedIntoId?: number
+  participantIds: number[]
+  participantNames: string[]
+  allowedTransitions: { toStatus: TaskStatus; requiresReason: boolean }[]
 }
 
 export interface ProjectDetails {

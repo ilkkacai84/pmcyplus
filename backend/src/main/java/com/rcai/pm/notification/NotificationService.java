@@ -10,16 +10,20 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 @Transactional(readOnly = true)
 public class NotificationService {
     private final NotificationRepository notifications;
     private final UserAccountRepository users;
+    private final NotificationWatcherRepository watchers;
 
-    public NotificationService(NotificationRepository notifications, UserAccountRepository users) {
-        this.notifications = notifications; this.users = users;
+    public NotificationService(NotificationRepository notifications, UserAccountRepository users,
+                               NotificationWatcherRepository watchers) {
+        this.notifications = notifications; this.users = users; this.watchers = watchers;
     }
 
     public NotificationInbox inbox(Authentication authentication) {
@@ -36,12 +40,30 @@ public class NotificationService {
     @Transactional
     public void notify(Collection<UserAccount> recipients, String eventType, String title, String content,
                        String objectType, Long objectId, int escalationLevel) {
-        recipients.stream().filter(java.util.Objects::nonNull).distinct().forEach(recipient -> {
+        Map<Long, UserAccount> allRecipients = new LinkedHashMap<>();
+        recipients.stream().filter(java.util.Objects::nonNull)
+            .forEach(recipient -> allRecipients.put(recipient.getId(), recipient));
+        if (objectType != null && objectId != null) {
+            watchers.findByObjectTypeAndObjectId(objectType, objectId).stream()
+                .map(NotificationWatcher::getUser).filter(UserAccount::isEnabled)
+                .forEach(recipient -> allRecipients.put(recipient.getId(), recipient));
+        }
+        allRecipients.values().forEach(recipient -> {
             for (NotificationChannel channel : NotificationChannel.values()) {
                 notifications.save(new Notification(recipient, channel, eventType, title, content,
                     objectType, objectId, escalationLevel));
             }
         });
+    }
+
+    @Transactional
+    public void watch(String objectType, Long objectId, Collection<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) return;
+        for (UserAccount user : users.findAllById(userIds)) {
+            if (user.isEnabled() && !watchers.existsByObjectTypeAndObjectIdAndUserId(objectType, objectId, user.getId())) {
+                watchers.save(new NotificationWatcher(objectType, objectId, user));
+            }
+        }
     }
 
     @Transactional

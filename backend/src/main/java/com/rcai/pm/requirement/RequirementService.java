@@ -24,6 +24,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Set;
+import java.util.LinkedHashSet;
 
 @Service
 @Transactional(readOnly = true)
@@ -56,9 +58,12 @@ public class RequirementService {
 
     @Transactional
     public RequirementView create(CreateRequirement request, Authentication authentication) {
-        UserAccount actor = current(authentication);
+        return createAs(request, current(authentication));
+    }
+
+    RequirementView createAs(CreateRequirement request, UserAccount actor) {
         if (request.customerId() != null && !actor.getRoles().contains(Role.ADMIN)
-            && !actor.getRoles().contains(Role.PROJECT_MANAGER)) {
+            && !actor.getRoles().contains(Role.PROJECT_MANAGER) && actor.getUserType() != UserType.CUSTOMER) {
             throw new ApiException(HttpStatus.FORBIDDEN, "只有管理员或项目经理可以代客户提交需求");
         }
         UserAccount customer = actor.getUserType() == UserType.CUSTOMER ? actor
@@ -96,10 +101,12 @@ public class RequirementService {
             throw new ApiException(HttpStatus.FORBIDDEN, "项目经理只能把需求关联到自己管理的项目");
         }
         requirement.assign(assignee, project);
+        notifications.watch("REQUIREMENT", requirement.getId(), request.notifyUserIds());
         audit.log(actor, "REQUIREMENT_ASSIGNED", "REQUIREMENT", requirement.getId(), Map.of(
             "assigneeId", assignee.getId(), "projectId", String.valueOf(request.projectId())
         ));
-        notifications.notify(List.of(assignee), "REQUIREMENT_ASSIGNED", "需求已分派给你", requirement.getTitle(),
+        Set<UserAccount> recipients = requirementRecipients(requirement);
+        notifications.notify(recipients, "REQUIREMENT_ASSIGNED", "需求已分派", requirement.getTitle(),
             "REQUIREMENT", requirement.getId(), 0);
         return RequirementView.from(requirement);
     }
@@ -131,6 +138,8 @@ public class RequirementService {
         audit.log(actor, "REQUIREMENT_STATUS_CHANGED", "REQUIREMENT", requirement.getId(), Map.of(
             "from", current.name(), "to", status.name()
         ));
+        notifications.notify(requirementRecipients(requirement), "REQUIREMENT_STATUS_CHANGED", "需求状态已更新",
+            requirement.getTitle() + "：" + current + " → " + status, "REQUIREMENT", requirement.getId(), 0);
         return RequirementView.from(requirement);
     }
 
@@ -162,6 +171,8 @@ public class RequirementService {
         audit.log(actor, "REQUIREMENT_LINKED_TO_PROJECT", "REQUIREMENT", requirement.getId(), Map.of(
             "projectId", created.id()
         ));
+        notifications.notify(requirementRecipients(requirement), "REQUIREMENT_LINKED_TO_PROJECT", "需求已关联项目",
+            created.name(), "REQUIREMENT", requirement.getId(), 0);
         return created;
     }
 
@@ -175,6 +186,14 @@ public class RequirementService {
         return users.findByUsernameIgnoreCase(authentication.getName()).orElseThrow();
     }
 
+    private Set<UserAccount> requirementRecipients(Requirement requirement) {
+        Set<UserAccount> recipients = new LinkedHashSet<>();
+        recipients.add(requirement.getSubmitter());
+        if (requirement.getAssignee() != null) recipients.add(requirement.getAssignee());
+        if (requirement.getCustomer() != null) recipients.add(requirement.getCustomer());
+        return recipients;
+    }
+
     private String uniqueNumber() {
         String value;
         do value = "REQ-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
@@ -184,7 +203,9 @@ public class RequirementService {
 
     public record CreateRequirement(@NotNull RequirementSource source, @NotBlank String title, String description,
                                     @NotNull Priority priority, Long customerId, @NotNull ProjectType projectType) {}
-    public record AssignRequirement(@NotNull Long assigneeId, Long projectId) {}
+    public record AssignRequirement(@NotNull Long assigneeId, Long projectId, Set<Long> notifyUserIds) {
+        public AssignRequirement(Long assigneeId, Long projectId) { this(assigneeId, projectId, Set.of()); }
+    }
     public record CreateProjectFromRequirement(@NotBlank String name, String description,
                                                @NotNull ProjectType projectType, @NotNull Priority priority,
                                                @NotNull Long managerId, LocalDateTime plannedStartAt,

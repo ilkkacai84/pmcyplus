@@ -42,6 +42,13 @@ server:
         same-site: lax
 
 app:
+  security:
+    login:
+      max-failures: ${LOGIN_MAX_FAILURES:5}
+      lock-minutes: ${LOGIN_LOCK_MINUTES:15}
+  intake:
+    enabled: ${INTAKE_ENABLED:false}
+    token: ${INTAKE_TOKEN:}
   storage:
     type: ${FILE_STORAGE_TYPE:local}
     path: ${FILE_STORAGE_PATH:./data/files}

@@ -73,11 +73,13 @@ public class SecurityConfig {
             .securityContext(context -> context.securityContextRepository(repository))
             .csrf(csrf -> csrf
                 .csrfTokenRepository(csrfRepository)
-                .csrfTokenRequestHandler(csrfHandler))
+                .csrfTokenRequestHandler(csrfHandler)
+                .ignoringRequestMatchers("/api/intake/**"))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/auth/csrf", "/api/auth/options", "/actuator/health").permitAll()
                 .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/intake/**").permitAll()
                 .anyRequest().authenticated())
             .requestCache(cache -> cache.disable())
             .formLogin(form -> form.disable())

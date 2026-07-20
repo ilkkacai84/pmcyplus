@@ -11,6 +11,8 @@
 5. [功能模块与页面结构](docs/05-功能模块与页面结构.md)
 6. [核心数据模型](docs/06-核心数据模型.md)
 7. [待确认事项与默认假设](docs/07-待确认事项.md)
+8. [部署、备份与恢复](docs/08-部署备份与恢复.md)
+9. [需求追溯与验收矩阵](docs/09-需求追溯与验收矩阵.md)
 
 ## 当前状态
 
@@ -142,6 +144,22 @@ FILE_STORAGE_HTTP_BEARER_TOKEN=...
 ```
 
 外部存储键只允许字母、数字、点、下划线和连字符；服务应对 `PUT {base-url}/{key}` 返回 2xx，并通过同一路径的 `GET` 返回原始文件内容。
+
+邮件网关或企业微信应用可调用外部需求接入 API。提交用户名必须对应管理员预先创建并启用的本地账号：
+
+```bash
+INTAKE_ENABLED=true
+INTAKE_TOKEN=replace-with-a-long-random-token
+
+curl -X POST https://pm.example.com/api/intake/EMAIL \
+  -H 'Content-Type: application/json' \
+  -H 'X-Intake-Token: replace-with-a-long-random-token' \
+  -d '{"username":"customer-a","title":"邮件主题","description":"邮件正文","priority":"MEDIUM","projectType":"INTERNAL"}'
+```
+
+`WECHAT` 使用相同请求结构。登录失败限制可通过 `LOGIN_MAX_FAILURES`（默认 5）和 `LOGIN_LOCK_MINUTES`（默认 15）调整。
+
+生产构建包含 PWA Manifest 与 Service Worker，可在支持的手机或桌面浏览器安装为独立窗口。复杂系统配置仍建议在桌面宽屏完成。
 
 ## 核心业务链路
 

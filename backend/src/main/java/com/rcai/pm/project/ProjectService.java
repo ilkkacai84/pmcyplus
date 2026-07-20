@@ -22,6 +22,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.LinkedHashSet;
 import java.util.UUID;
 
 @Service
@@ -31,6 +33,7 @@ public class ProjectService {
     private final ProjectMemberRepository members;
     private final MilestoneRepository milestones;
     private final TaskItemRepository tasks;
+    private final TaskParticipantRepository participants;
     private final WorklogRepository worklogs;
     private final DeliveryVersionRepository deliveries;
     private final UserAccountRepository users;
@@ -39,13 +42,15 @@ public class ProjectService {
     private final NotificationService notifications;
 
     public ProjectService(ProjectRepository projects, ProjectMemberRepository members, MilestoneRepository milestones,
-                          TaskItemRepository tasks, WorklogRepository worklogs, DeliveryVersionRepository deliveries,
+                          TaskItemRepository tasks, TaskParticipantRepository participants,
+                          WorklogRepository worklogs, DeliveryVersionRepository deliveries,
                           UserAccountRepository users, AuditService audit, WorkflowService workflow,
                           NotificationService notifications) {
         this.projects = projects;
         this.members = members;
         this.milestones = milestones;
         this.tasks = tasks;
+        this.participants = participants;
         this.worklogs = worklogs;
         this.deliveries = deliveries;
         this.users = users;
@@ -62,8 +67,10 @@ public class ProjectService {
 
     public ProjectDetails get(Long projectId, Authentication authentication) {
         Project project = accessibleProject(projectId, authentication);
-        List<MilestoneView> milestoneViews = milestones.findByProjectIdOrderByPlannedAtAsc(projectId).stream().map(MilestoneView::from).toList();
-        List<TaskView> taskViews = tasks.findByProjectIdAndMergedIntoIdIsNullOrderByCreatedAtAsc(projectId).stream().map(TaskView::from).toList();
+        UserAccount actor = current(authentication);
+        List<MilestoneView> milestoneViews = milestones.findByProjectIdOrderByPlannedAtAsc(projectId).stream().map(this::milestoneView).toList();
+        List<TaskView> taskViews = tasks.findByProjectIdAndMergedIntoIdIsNullOrderByCreatedAtAsc(projectId).stream()
+            .map(task -> taskView(task, actor)).toList();
         List<DeliveryView> deliveryViews = deliveries.findByProjectId(projectId).stream().map(DeliveryView::from).toList();
         return ProjectDetails.from(project, milestoneViews, taskViews, deliveryViews);
     }
@@ -98,6 +105,8 @@ public class ProjectService {
         audit.log(authentication, "PROJECT_STATUS_CHANGED", "PROJECT", projectId, Map.of(
             "from", previous.name(), "to", status.name()
         ));
+        notifications.notify(projectRecipients(project), "PROJECT_STATUS_CHANGED", "项目状态已更新",
+            project.getName() + "：" + previous + " → " + status, "PROJECT", projectId, 0);
         return ProjectSummary.from(project);
     }
 
@@ -117,12 +126,31 @@ public class ProjectService {
         UserAccount owner = request.ownerId() == null ? project.getManager() : user(request.ownerId());
         Milestone milestone = milestones.save(new Milestone(project, request.name().trim(), owner, request.plannedAt()));
         audit.log(authentication, "MILESTONE_CREATED", "MILESTONE", milestone.getId(), Map.of("projectId", projectId));
-        return MilestoneView.from(milestone);
+        notifications.notify(projectRecipients(project), "MILESTONE_CREATED", "项目新增里程碑",
+            milestone.getName(), "PROJECT", projectId, 0);
+        return milestoneView(milestone);
+    }
+
+    @Transactional
+    public MilestoneView changeMilestoneStatus(Long milestoneId, ProjectStatus status, Authentication authentication) {
+        if (status == ProjectStatus.MERGED) throw new ApiException(HttpStatus.BAD_REQUEST, "里程碑不能手工设为已合并");
+        Milestone milestone = milestones.findById(milestoneId)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "里程碑不存在"));
+        managedProject(milestone.getProject().getId(), authentication);
+        ProjectStatus previous = milestone.getStatus();
+        milestone.changeStatus(status);
+        audit.log(authentication, "MILESTONE_STATUS_CHANGED", "MILESTONE", milestoneId,
+            Map.of("from", previous.name(), "to", status.name()));
+        notifications.notify(projectRecipients(milestone.getProject()), "MILESTONE_STATUS_CHANGED",
+            "里程碑状态已更新", milestone.getName() + "：" + previous + " → " + status,
+            "PROJECT", milestone.getProject().getId(), 0);
+        return milestoneView(milestone);
     }
 
     @Transactional
     public TaskView createTask(Long projectId, CreateTask request, Authentication authentication) {
         Project project = managedProject(projectId, authentication);
+        UserAccount actor = current(authentication);
         UserAccount owner = user(request.ownerId());
         Milestone milestone = request.milestoneId() == null ? null : milestones.findById(request.milestoneId())
             .filter(value -> value.getProject().getId().equals(projectId))
@@ -132,19 +160,35 @@ public class ProjectService {
             .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "父任务不属于当前项目"));
         TaskItem task = tasks.save(new TaskItem(project, milestone, parent, request.title().trim(), request.description(), owner,
             request.priority(), request.plannedStartAt(), request.plannedEndAt(), request.estimatedHours()));
-        if (!members.existsByProjectIdAndUserId(projectId, owner.getId())) {
-            members.save(new ProjectMember(projectId, owner.getId(), "MEMBER"));
+        Set<Long> participantIds = new LinkedHashSet<>(request.participantIds() == null ? Set.of() : request.participantIds());
+        participantIds.add(owner.getId());
+        List<UserAccount> taskUsers = users.findAllById(participantIds);
+        if (taskUsers.size() != participantIds.size() || taskUsers.stream().anyMatch(user -> user.getUserType() != UserType.INTERNAL)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "任务参与人必须是有效内部账号");
+        }
+        for (UserAccount taskUser : taskUsers) {
+            participants.save(new TaskParticipant(task.getId(), taskUser.getId(),
+                taskUser.getId().equals(owner.getId()) ? "OWNER" : "PARTICIPANT",
+                taskUser.getId().equals(owner.getId()) ? task.getEstimatedHours() : BigDecimal.ZERO));
+            if (!members.existsByProjectIdAndUserId(projectId, taskUser.getId())) {
+                members.save(new ProjectMember(projectId, taskUser.getId(), "MEMBER"));
+            }
         }
         audit.log(authentication, "TASK_CREATED", "TASK", task.getId(), Map.of(
             "projectId", projectId, "ownerId", owner.getId()
         ));
-        notifications.notify(List.of(owner), "TASK_ASSIGNED", "新任务已分配给你", task.getTitle(),
+        notifications.notify(taskUsers, "TASK_ASSIGNED", "新任务已分配", task.getTitle(),
             "TASK", task.getId(), 0);
-        return TaskView.from(task);
+        return taskView(task, actor);
     }
 
     @Transactional
     public TaskView transitionTask(Long taskId, TaskStatus target, Authentication authentication) {
+        return transitionTask(taskId, target, null, authentication);
+    }
+
+    @Transactional
+    public TaskView transitionTask(Long taskId, TaskStatus target, String reason, Authentication authentication) {
         UserAccount actor = current(authentication);
         TaskItem task = tasks.findById(taskId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "任务不存在"));
         requireActive(task);
@@ -154,16 +198,19 @@ public class ProjectService {
         }
         boolean manager = task.getProject().getManager().getId().equals(actor.getId());
         boolean admin = actor.getRoles().contains(Role.ADMIN);
-        boolean owner = task.getOwner().getId().equals(actor.getId());
+        boolean participant = participants.existsById(new TaskParticipantId(taskId, actor.getId()));
         TaskStatus current = task.getStatus();
-        if (!admin && !manager && !owner) throw new ApiException(HttpStatus.FORBIDDEN, "当前用户无权修改该任务");
-        workflow.requireTransition(task.getProject().getProjectType(), WorkflowObjectType.TASK,
-            current.name(), target.name(), actor, null);
+        if (!admin && !manager && !participant) throw new ApiException(HttpStatus.FORBIDDEN, "当前用户无权修改该任务");
+        var transition = workflow.requireTransition(task.getProject().getProjectType(), WorkflowObjectType.TASK,
+            current.name(), target.name(), actor, reason);
         task.changeStatus(target);
-        audit.log(actor, "TASK_STATUS_CHANGED", "TASK", taskId, Map.of(
-            "from", current.name(), "to", target.name()
-        ));
-        return TaskView.from(task);
+        Map<String, Object> detail = new java.util.LinkedHashMap<>();
+        detail.put("from", current.name()); detail.put("to", target.name());
+        if (reason != null && !reason.isBlank()) detail.put("reason", reason.trim());
+        audit.log(actor, "TASK_STATUS_CHANGED", "TASK", taskId, detail);
+        notifications.notify(taskRecipients(task), event(transition, "TASK_STATUS_CHANGED"), "任务状态已更新",
+            task.getTitle() + "：" + current + " → " + target, "TASK", taskId, 0);
+        return taskView(task, actor);
     }
 
     @Transactional
@@ -174,12 +221,12 @@ public class ProjectService {
         accessibleProject(task.getProject().getId(), authentication);
         boolean allowed = actor.getRoles().contains(Role.ADMIN)
             || task.getProject().getManager().getId().equals(actor.getId())
-            || task.getOwner().getId().equals(actor.getId());
+            || participants.existsById(new TaskParticipantId(taskId, actor.getId()));
         if (!allowed) throw new ApiException(HttpStatus.FORBIDDEN, "只有负责人或项目经理可以提交任务");
         if (!List.of(TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED).contains(task.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "只有进行中或阻塞的任务可以提交交付");
         }
-        workflow.requireTransition(task.getProject().getProjectType(), WorkflowObjectType.TASK,
+        var transition = workflow.requireTransition(task.getProject().getProjectType(), WorkflowObjectType.TASK,
             task.getStatus().name(), TaskStatus.PENDING_ACCEPTANCE.name(), actor, request.note());
         worklogs.save(new Worklog(task, actor, request.hours(), request.note(), request.workedOn()));
         task.addActualHours(request.hours());
@@ -190,11 +237,11 @@ public class ProjectService {
         audit.log(actor, "TASK_DELIVERED", "TASK", taskId, Map.of(
             "version", delivery.getVersionNo(), "hours", request.hours()
         ));
-        if (task.getProject().getCustomer() != null) {
-            notifications.notify(List.of(task.getProject().getCustomer()), "DELIVERY_SUBMITTED", "有新的交付待验收",
-                task.getTitle(), "TASK", taskId, 0);
-        }
-        return TaskView.from(task);
+        Set<UserAccount> recipients = taskRecipients(task);
+        if (task.getProject().getCustomer() != null) recipients.add(task.getProject().getCustomer());
+        notifications.notify(recipients, event(transition, "DELIVERY_SUBMITTED"), "有新的交付待验收",
+            task.getTitle(), "TASK", taskId, 0);
+        return taskView(task, actor);
     }
 
     @Transactional
@@ -220,7 +267,7 @@ public class ProjectService {
             .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "未找到待验收交付版本"));
         TaskStatus target = request.decision() == DeliveryStatus.ACCEPTED
             ? TaskStatus.COMPLETED : TaskStatus.IN_PROGRESS;
-        workflow.requireTransition(task.getProject().getProjectType(), WorkflowObjectType.TASK,
+        var transition = workflow.requireTransition(task.getProject().getProjectType(), WorkflowObjectType.TASK,
             task.getStatus().name(), target.name(), actor, request.opinion());
         delivery.review(request.decision(), actor, request.opinion());
         task.changeStatus(target);
@@ -228,7 +275,7 @@ public class ProjectService {
             "version", delivery.getVersionNo(), "decision", request.decision().name(),
             "opinion", request.opinion() == null ? "" : request.opinion()
         ));
-        notifications.notify(List.of(task.getOwner(), task.getProject().getManager()), "DELIVERY_REVIEWED",
+        notifications.notify(taskRecipients(task), event(transition, "DELIVERY_REVIEWED"),
             "客户已完成交付验收", request.decision().name(), "TASK", taskId, 0);
         return DeliveryView.from(delivery);
     }
@@ -262,6 +309,44 @@ public class ProjectService {
         }
     }
 
+    private TaskView taskView(TaskItem task, UserAccount actor) {
+        List<Long> participantIds = participants.findByTaskIdOrderByUserId(task.getId()).stream()
+            .map(TaskParticipant::getUserId).toList();
+        return TaskView.from(task, users.findAllById(participantIds), workflow.allowedTransitions(
+            task.getProject().getProjectType(), WorkflowObjectType.TASK, task.getStatus().name(), actor));
+    }
+
+    private MilestoneView milestoneView(Milestone milestone) {
+        List<TaskItem> milestoneTasks = tasks.findByProjectIdAndMergedIntoIdIsNullOrderByCreatedAtAsc(
+            milestone.getProject().getId()).stream()
+            .filter(task -> task.getMilestone() != null && task.getMilestone().getId().equals(milestone.getId())).toList();
+        long completed = milestoneTasks.stream().filter(task -> task.getStatus() == TaskStatus.COMPLETED).count();
+        BigDecimal rate = milestoneTasks.isEmpty() ? BigDecimal.ZERO : BigDecimal.valueOf(completed * 100d / milestoneTasks.size())
+            .setScale(1, java.math.RoundingMode.HALF_UP);
+        return MilestoneView.from(milestone, rate);
+    }
+
+    private Set<UserAccount> taskRecipients(TaskItem task) {
+        Set<UserAccount> recipients = new LinkedHashSet<>();
+        recipients.add(task.getProject().getManager());
+        recipients.addAll(users.findAllById(participants.findByTaskIdOrderByUserId(task.getId()).stream()
+            .map(TaskParticipant::getUserId).toList()));
+        return recipients;
+    }
+
+    private Set<UserAccount> projectRecipients(Project project) {
+        Set<UserAccount> recipients = new LinkedHashSet<>(users.findAllById(
+            members.findByProjectId(project.getId()).stream().map(ProjectMember::getUserId).toList()));
+        recipients.add(project.getManager());
+        if (project.getCustomer() != null) recipients.add(project.getCustomer());
+        return recipients;
+    }
+
+    private String event(com.rcai.pm.workflow.WorkflowTransition transition, String fallback) {
+        String configured = transition.getNotificationEvent();
+        return configured == null || configured.isBlank() ? fallback : configured;
+    }
+
     private UserAccount current(Authentication authentication) {
         return users.findByUsernameIgnoreCase(authentication.getName()).orElseThrow();
     }
@@ -289,7 +374,15 @@ public class ProjectService {
     public record CreateMilestone(@NotBlank String name, Long ownerId, LocalDateTime plannedAt) {}
     public record CreateTask(@NotBlank String title, String description, @NotNull Long ownerId, Long milestoneId,
                              Long parentTaskId, @NotNull Priority priority, LocalDateTime plannedStartAt,
-                             LocalDateTime plannedEndAt, @DecimalMin("0") BigDecimal estimatedHours) {}
+                             LocalDateTime plannedEndAt, @DecimalMin("0") BigDecimal estimatedHours,
+                             Set<Long> participantIds) {
+        public CreateTask(String title, String description, Long ownerId, Long milestoneId, Long parentTaskId,
+                          Priority priority, LocalDateTime plannedStartAt, LocalDateTime plannedEndAt,
+                          BigDecimal estimatedHours) {
+            this(title, description, ownerId, milestoneId, parentTaskId, priority, plannedStartAt,
+                plannedEndAt, estimatedHours, Set.of());
+        }
+    }
     public record CompleteTask(@NotNull @DecimalMin("0.01") BigDecimal hours, String note, @NotNull LocalDate workedOn) {}
     public record ReviewDelivery(@NotNull DeliveryStatus decision, String opinion) {}
     public record UpdateFinancials(@NotNull @DecimalMin("0") BigDecimal budget,
@@ -314,23 +407,30 @@ public class ProjectService {
         }
     }
 
-    public record MilestoneView(Long id, String name, Long ownerId, String ownerName, LocalDateTime plannedAt, ProjectStatus status) {
-        static MilestoneView from(Milestone m) {
+    public record MilestoneView(Long id, String name, Long ownerId, String ownerName, LocalDateTime plannedAt,
+                                LocalDateTime actualAt, ProjectStatus status, BigDecimal completionRate) {
+        static MilestoneView from(Milestone m, BigDecimal completionRate) {
             return new MilestoneView(m.getId(), m.getName(), m.getOwner() == null ? null : m.getOwner().getId(),
-                m.getOwner() == null ? null : m.getOwner().getDisplayName(), m.getPlannedAt(), m.getStatus());
+                m.getOwner() == null ? null : m.getOwner().getDisplayName(), m.getPlannedAt(), m.getActualAt(),
+                m.getStatus(), completionRate);
         }
     }
 
     public record TaskView(Long id, Long milestoneId, Long parentTaskId, String title, String description, Long ownerId,
                            String ownerName, TaskStatus status, Priority priority, LocalDateTime plannedStartAt,
                            LocalDateTime plannedEndAt, LocalDateTime actualStartAt, LocalDateTime actualEndAt,
-                           BigDecimal estimatedHours, BigDecimal actualHours, Long mergedIntoId) {
-        static TaskView from(TaskItem t) {
+                           BigDecimal estimatedHours, BigDecimal actualHours, Long mergedIntoId,
+                           List<Long> participantIds, List<String> participantNames,
+                           List<WorkflowService.AllowedTransition> allowedTransitions) {
+        static TaskView from(TaskItem t, List<UserAccount> participants,
+                             List<WorkflowService.AllowedTransition> allowedTransitions) {
             return new TaskView(t.getId(), t.getMilestone() == null ? null : t.getMilestone().getId(),
                 t.getParentTask() == null ? null : t.getParentTask().getId(), t.getTitle(), t.getDescription(),
                 t.getOwner().getId(), t.getOwner().getDisplayName(), t.getStatus(), t.getPriority(),
                 t.getPlannedStartAt(), t.getPlannedEndAt(), t.getActualStartAt(), t.getActualEndAt(),
-                t.getEstimatedHours(), t.getActualHours(), t.getMergedIntoId());
+                t.getEstimatedHours(), t.getActualHours(), t.getMergedIntoId(),
+                participants.stream().map(UserAccount::getId).toList(),
+                participants.stream().map(UserAccount::getDisplayName).toList(), allowedTransitions);
         }
     }
 

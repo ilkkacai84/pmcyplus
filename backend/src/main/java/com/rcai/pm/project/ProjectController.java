@@ -57,6 +57,13 @@ public class ProjectController {
         return service.createMilestone(projectId, request, authentication);
     }
 
+    @PatchMapping("/milestones/{milestoneId}/status")
+    public ProjectService.MilestoneView changeMilestoneStatus(@PathVariable Long milestoneId,
+                                                               @RequestParam ProjectStatus status,
+                                                               Authentication authentication) {
+        return service.changeMilestoneStatus(milestoneId, status, authentication);
+    }
+
     @PostMapping("/{projectId}/tasks")
     public ProjectService.TaskView createTask(@PathVariable Long projectId,
                                                @Valid @RequestBody ProjectService.CreateTask request,
@@ -65,8 +72,10 @@ public class ProjectController {
     }
 
     @PatchMapping("/tasks/{taskId}/status")
-    public ProjectService.TaskView transitionTask(@PathVariable Long taskId, @RequestParam TaskStatus status, Authentication authentication) {
-        return service.transitionTask(taskId, status, authentication);
+    public ProjectService.TaskView transitionTask(@PathVariable Long taskId, @RequestParam TaskStatus status,
+                                                   @RequestParam(required = false) String reason,
+                                                   Authentication authentication) {
+        return service.transitionTask(taskId, status, reason, authentication);
     }
 
     @PostMapping("/tasks/{taskId}/complete")

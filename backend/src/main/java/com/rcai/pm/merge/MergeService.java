@@ -93,6 +93,7 @@ public class MergeService {
             }
             jdbc.update("update notifications set object_id = ? where object_type = ? and object_id = ?",
                 targetId, type.name(), source.id());
+            moveNotificationWatchers(type.name(), source.id(), targetId);
         }
 
         UserAccount operator = users.findByUsernameIgnoreCase(authentication.getName()).orElseThrow();
@@ -105,6 +106,19 @@ public class MergeService {
             "sourceIds", sourceJson, "mergeRecordId", record.getId(), "conflictPolicy", "KEEP_TARGET"));
         return new MergeResult(record.getId(), type, sourceIds.stream().distinct().toList(), targetId,
             "COMPLETED", preview.migrationScope());
+    }
+
+    private void moveNotificationWatchers(String objectType, Long sourceId, Long targetId) {
+        for (Long userId : jdbc.queryForList(
+            "select user_id from notification_watchers where object_type = ? and object_id = ?",
+            Long.class, objectType, sourceId)) {
+            if (count("select count(*) from notification_watchers where object_type = ? and object_id = ? and user_id = ?",
+                objectType, targetId, userId) == 0) {
+                jdbc.update("insert into notification_watchers(object_type,object_id,user_id) values(?,?,?)",
+                    objectType, targetId, userId);
+            }
+        }
+        jdbc.update("delete from notification_watchers where object_type = ? and object_id = ?", objectType, sourceId);
     }
 
     private void mergeProject(Long sourceId, Long targetId) {

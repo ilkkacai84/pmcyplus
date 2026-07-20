@@ -9,6 +9,8 @@ import jakarta.validation.constraints.NotBlank;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.AuthenticationException;
+import com.rcai.pm.common.ApiException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -32,14 +34,17 @@ public class AuthController {
     private final UserAccountRepository users;
     private final boolean ssoEnabled;
     private final String ssoRegistrationId;
+    private final LoginAttemptService loginAttempts;
 
     public AuthController(AuthenticationManager authenticationManager, SecurityContextRepository securityContextRepository,
                           UserAccountRepository users,
+                          LoginAttemptService loginAttempts,
                           @Value("${app.sso.enabled:false}") boolean ssoEnabled,
                           @Value("${app.sso.registration-id:corporate}") String ssoRegistrationId) {
         this.authenticationManager = authenticationManager;
         this.securityContextRepository = securityContextRepository;
         this.users = users;
+        this.loginAttempts = loginAttempts;
         this.ssoEnabled = ssoEnabled;
         this.ssoRegistrationId = ssoRegistrationId;
     }
@@ -56,9 +61,18 @@ public class AuthController {
 
     @PostMapping("/login")
     public CurrentUser login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest, HttpServletResponse response) {
-        Authentication authentication = authenticationManager.authenticate(
-            UsernamePasswordAuthenticationToken.unauthenticated(request.username(), request.password())
-        );
+        String address = httpRequest.getRemoteAddr();
+        loginAttempts.checkAllowed(request.username(), address);
+        Authentication authentication;
+        try {
+            authentication = authenticationManager.authenticate(
+                UsernamePasswordAuthenticationToken.unauthenticated(request.username(), request.password())
+            );
+        } catch (AuthenticationException exception) {
+            loginAttempts.recordFailure(request.username(), address);
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "账号或密码错误");
+        }
+        loginAttempts.clear(request.username(), address);
         SecurityContext context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(authentication);
         SecurityContextHolder.setContext(context);

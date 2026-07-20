@@ -18,7 +18,7 @@ const approvalHistory = ref<ApprovalInstance[]>([])
 const historyRequirement = ref<Requirement | null>(null)
 const error = ref('')
 const form = reactive({ source: 'WEB', title: '', description: '', priority: 'MEDIUM', projectType: 'INTERNAL' })
-const assignment = reactive({ assigneeId: undefined as number | undefined, projectId: undefined as number | undefined })
+const assignment = reactive({ assigneeId: undefined as number | undefined, projectId: undefined as number | undefined, notifyUserIds: [] as number[] })
 const projectForm = reactive({ name: '', description: '', projectType: 'INTERNAL', priority: 'MEDIUM', managerId: undefined as number | undefined, plannedStartAt: '', plannedEndAt: '' })
 const canAssign = computed(() => !!auth.user?.roles.some(role => role === 'ADMIN' || role === 'PROJECT_MANAGER'))
 const isAdmin = computed(() => !!auth.user?.roles.includes('ADMIN'))
@@ -56,6 +56,7 @@ function openAssignment(item: Requirement) {
   assigning.value = item
   assignment.assigneeId = item.assigneeId ?? internalUsers.value[0]?.id
   assignment.projectId = item.projectId
+  assignment.notifyUserIds = []
 }
 
 async function assignRequirement() {
@@ -66,6 +67,7 @@ async function assignRequirement() {
     await http.post(`/requirements/${assigning.value.id}/assign`, {
       assigneeId: assignment.assigneeId,
       projectId: assignment.projectId || null,
+      notifyUserIds: assignment.notifyUserIds,
     })
     assigning.value = null
     await load()
@@ -173,6 +175,7 @@ onMounted(load)
     <div class="span-2"><span class="eyebrow">ASSIGN REQUIREMENT</span><h2>分派 {{ assigning.requirementNo }} · {{ assigning.title }}</h2></div>
     <label>负责人<select v-model="assignment.assigneeId" required><option v-for="user in internalUsers" :key="user.id" :value="user.id">{{ user.displayName }}</option></select></label>
     <label>关联项目<select v-model="assignment.projectId"><option :value="undefined">暂不关联项目</option><option v-for="project in projects" :key="project.id" :value="project.id">{{ project.code }} · {{ project.name }}</option></select></label>
+    <label class="span-2">指定通知用户<select v-model="assignment.notifyUserIds" multiple><option v-for="user in internalUsers.filter(item => item.id !== assignment.assigneeId)" :key="user.id" :value="user.id">{{ user.displayName }} · {{ user.departmentName || '未设置部门' }}</option></select></label>
     <div class="form-actions span-2"><button type="button" class="secondary-button" @click="assigning = null">取消</button><button class="primary-button">确认分派</button></div>
   </form>
 

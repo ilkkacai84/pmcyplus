@@ -1,0 +1,19 @@
+{
+  "name": "企业项目管理平台",
+  "short_name": "项目管理",
+  "description": "企业需求、项目、任务与交付协作平台",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f5ef",
+  "theme_color": "#123c36",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/pm-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
