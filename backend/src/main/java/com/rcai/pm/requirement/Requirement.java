@@ -88,6 +88,13 @@ public class Requirement {
     public RequirementStatus getStatus() { return status; }
     public Priority getPriority() { return priority; }
     public Instant getCreatedAt() { return createdAt; }
+    public Long getMergedIntoId() { return mergedIntoId; }
+
+    public void markMerged(Long targetId) {
+        this.mergedIntoId = targetId;
+        this.status = RequirementStatus.MERGED;
+        this.updatedAt = Instant.now();
+    }
 
     public void assign(UserAccount assignee, Project project) {
         this.assignee = assignee;

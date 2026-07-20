@@ -1,6 +1,7 @@
 package com.rcai.pm;
 
 import com.rcai.pm.audit.AuditService;
+import com.rcai.pm.common.ApiException;
 import com.rcai.pm.notification.NotificationService;
 import com.rcai.pm.notification.OverdueEscalationService;
 import com.rcai.pm.risk.RiskLevel;
@@ -9,16 +10,26 @@ import com.rcai.pm.risk.RiskStatus;
 import com.rcai.pm.document.DocumentService;
 import com.rcai.pm.resource.ResourceService;
 import com.rcai.pm.report.ReportService;
+import com.rcai.pm.merge.MergeObjectType;
+import com.rcai.pm.merge.MergeService;
+import com.rcai.pm.merge.MergeRecordRepository;
+import com.rcai.pm.merge.MergeController;
 import com.rcai.pm.project.Priority;
 import com.rcai.pm.project.DeliveryStatus;
 import com.rcai.pm.project.ProjectService;
 import com.rcai.pm.project.ProjectType;
 import com.rcai.pm.project.TaskStatus;
+import com.rcai.pm.project.TaskItemRepository;
+import com.rcai.pm.project.Worklog;
+import com.rcai.pm.project.WorklogRepository;
+import com.rcai.pm.project.DeliveryVersion;
+import com.rcai.pm.project.DeliveryVersionRepository;
 import com.rcai.pm.requirement.RequirementService;
 import com.rcai.pm.requirement.ApprovalDecision;
 import com.rcai.pm.requirement.ApprovalService;
 import com.rcai.pm.requirement.RequirementSource;
 import com.rcai.pm.requirement.RequirementStatus;
+import com.rcai.pm.requirement.RequirementRepository;
 import com.rcai.pm.user.Role;
 import com.rcai.pm.user.Department;
 import com.rcai.pm.user.DepartmentRepository;
@@ -35,14 +46,17 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.Set;
+import java.util.List;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
 class ProjectManagementApplicationTests {
@@ -76,6 +90,22 @@ class ProjectManagementApplicationTests {
     private ResourceService resourceService;
     @Autowired
     private ReportService reportService;
+    @Autowired
+    private MergeService mergeService;
+    @Autowired
+    private MergeRecordRepository mergeRecords;
+    @Autowired
+    private TaskItemRepository taskItems;
+    @Autowired
+    private WorklogRepository worklogRepository;
+    @Autowired
+    private DeliveryVersionRepository deliveryRepository;
+    @Autowired
+    private RequirementRepository requirementRepository;
+    @Autowired
+    private JdbcTemplate jdbc;
+    @Autowired
+    private MergeController mergeController;
 
     @Test
     void contextLoads() {
@@ -93,6 +123,121 @@ class ProjectManagementApplicationTests {
                 assertThat(user.username()).isEqualTo("user-list-admin");
                 assertThat(user.roles()).contains(Role.ADMIN);
             });
+    }
+
+    @Test
+    @Transactional
+    void mergePreviewShowsMigrationScopeAndFieldConflicts() {
+        UserAccount manager = saveUser("merge-preview-manager", "合并预览经理", UserType.INTERNAL, Role.PROJECT_MANAGER);
+        var authentication = UsernamePasswordAuthenticationToken.authenticated(manager.getUsername(), "n/a", Set.of());
+        var source = projects.create(new ProjectService.CreateProject(
+            "重复项目", "来源说明", ProjectType.INTERNAL, Priority.HIGH,
+            manager.getId(), null, null, null
+        ), authentication);
+        var target = projects.create(new ProjectService.CreateProject(
+            "保留项目", "目标说明", ProjectType.INTERNAL, Priority.MEDIUM,
+            manager.getId(), null, null, null
+        ), authentication);
+        projects.createTask(source.id(), new ProjectService.CreateTask(
+            "待迁移任务", null, manager.getId(), null, null, Priority.HIGH,
+            LocalDateTime.now(), LocalDateTime.now().plusDays(1), BigDecimal.valueOf(8)
+        ), authentication);
+
+        var preview = mergeService.preview(MergeObjectType.PROJECT, List.of(source.id()), target.id());
+
+        assertThat(preview.target().id()).isEqualTo(target.id());
+        assertThat(preview.migrationScope()).containsEntry("tasks", 1L);
+        assertThat(preview.conflicts()).extracting(MergeService.FieldConflict::field)
+            .contains("name", "description", "priority");
+
+        Set<String> accepted = preview.conflicts().stream()
+            .map(MergeService.FieldConflict::field).collect(java.util.stream.Collectors.toSet());
+        var result = mergeService.execute(MergeObjectType.PROJECT, List.of(source.id()), target.id(),
+            accepted, authentication);
+
+        assertThat(result.status()).isEqualTo("COMPLETED");
+        assertThat(mergeRecords.findById(result.mergeRecordId())).isPresent();
+        assertThat(projects.get(source.id(), authentication).project().status().name()).isEqualTo("MERGED");
+        assertThat(projects.get(target.id(), authentication).tasks())
+            .extracting(ProjectService.TaskView::title).contains("待迁移任务");
+        assertThatThrownBy(() -> projects.updateFinancials(source.id(), new ProjectService.UpdateFinancials(
+            BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.ZERO
+        ), authentication)).isInstanceOf(ApiException.class).hasMessageContaining("只");
+        assertThatThrownBy(() -> mergeService.preview(MergeObjectType.PROJECT, List.of(source.id()), target.id()))
+            .isInstanceOf(ApiException.class).hasMessageContaining("已经合并");
+    }
+
+    @Test
+    @Transactional
+    void taskMergeMovesWorklogsAndRenumbersDeliveries() {
+        UserAccount admin = saveUser("task-merge-admin", "任务合并管理员", UserType.INTERNAL, Role.ADMIN);
+        var authentication = UsernamePasswordAuthenticationToken.authenticated(admin.getUsername(), "n/a", Set.of());
+        var project = projects.create(new ProjectService.CreateProject(
+            "任务合并项目", null, ProjectType.INTERNAL, Priority.HIGH,
+            admin.getId(), null, null, null
+        ), authentication);
+        var sourceView = projects.createTask(project.id(), new ProjectService.CreateTask(
+            "重复任务", null, admin.getId(), null, null, Priority.HIGH,
+            LocalDateTime.now(), LocalDateTime.now().plusDays(1), BigDecimal.valueOf(4)
+        ), authentication);
+        var targetView = projects.createTask(project.id(), new ProjectService.CreateTask(
+            "保留任务", null, admin.getId(), null, null, Priority.MEDIUM,
+            LocalDateTime.now(), LocalDateTime.now().plusDays(2), BigDecimal.valueOf(8)
+        ), authentication);
+        var source = taskItems.findById(sourceView.id()).orElseThrow();
+        var target = taskItems.findById(targetView.id()).orElseThrow();
+        source.addActualHours(BigDecimal.valueOf(2));
+        worklogRepository.save(new Worklog(source, admin, BigDecimal.valueOf(2), "来源工时", LocalDate.now()));
+        deliveryRepository.save(new DeliveryVersion(source, 1, admin, "来源版本"));
+        deliveryRepository.save(new DeliveryVersion(target, 1, admin, "目标版本"));
+
+        var preview = mergeService.preview(MergeObjectType.TASK, List.of(source.getId()), target.getId());
+        Set<String> accepted = preview.conflicts().stream()
+            .map(MergeService.FieldConflict::field).collect(java.util.stream.Collectors.toSet());
+        mergeService.execute(MergeObjectType.TASK, List.of(source.getId()), target.getId(), accepted, authentication);
+
+        assertThat(source.getStatus()).isEqualTo(TaskStatus.MERGED);
+        assertThat(source.getMergedIntoId()).isEqualTo(target.getId());
+        assertThat(target.getActualHours()).isEqualByComparingTo("2");
+        assertThat(jdbc.queryForObject("select count(*) from worklogs where task_id = ?", Long.class, target.getId()))
+            .isEqualTo(1L);
+        assertThat(jdbc.queryForObject("select max(version_no) from delivery_versions where task_id = ?", Integer.class, target.getId()))
+            .isEqualTo(2);
+        assertThatThrownBy(() -> projects.transitionTask(source.getId(), TaskStatus.TODO, authentication))
+            .isInstanceOf(ApiException.class).hasMessageContaining("只");
+    }
+
+    @Test
+    @Transactional
+    void requirementMergePreservesSourceMapping() {
+        UserAccount admin = saveUser("requirement-merge-admin", "需求合并管理员", UserType.INTERNAL, Role.ADMIN);
+        var authentication = UsernamePasswordAuthenticationToken.authenticated(admin.getUsername(), "n/a", Set.of());
+        var source = requirements.create(new RequirementService.CreateRequirement(
+            RequirementSource.WEB, "重复需求", "来源", Priority.HIGH, null, ProjectType.INTERNAL
+        ), authentication);
+        var target = requirements.create(new RequirementService.CreateRequirement(
+            RequirementSource.WECHAT, "保留需求", "目标", Priority.MEDIUM, null, ProjectType.INTERNAL
+        ), authentication);
+        var preview = mergeService.preview(MergeObjectType.REQUIREMENT, List.of(source.id()), target.id());
+        Set<String> accepted = preview.conflicts().stream()
+            .map(MergeService.FieldConflict::field).collect(java.util.stream.Collectors.toSet());
+
+        mergeService.execute(MergeObjectType.REQUIREMENT, List.of(source.id()), target.id(), accepted, authentication);
+
+        var merged = requirementRepository.findById(source.id()).orElseThrow();
+        assertThat(merged.getStatus()).isEqualTo(RequirementStatus.MERGED);
+        assertThat(merged.getMergedIntoId()).isEqualTo(target.id());
+        assertThatThrownBy(() -> requirements.assign(source.id(), new RequirementService.AssignRequirement(
+            admin.getId(), null
+        ), authentication)).isInstanceOf(ApiException.class).hasMessageContaining("只");
+    }
+
+    @Test
+    @WithMockUser(username = "member", roles = "MEMBER")
+    void nonAdminCannotPreviewMerge() {
+        assertThatThrownBy(() -> mergeController.preview(new MergeController.PreviewRequest(
+            MergeObjectType.PROJECT, List.of(1L), 2L
+        ))).isInstanceOf(org.springframework.security.authorization.AuthorizationDeniedException.class);
     }
 
     @Test

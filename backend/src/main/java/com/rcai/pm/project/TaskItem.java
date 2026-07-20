@@ -95,6 +95,18 @@ public class TaskItem {
     public LocalDateTime getActualEndAt() { return actualEndAt; }
     public BigDecimal getEstimatedHours() { return estimatedHours; }
     public BigDecimal getActualHours() { return actualHours; }
+    public Long getMergedIntoId() { return mergedIntoId; }
+
+    public void markMerged(Long targetId) {
+        this.mergedIntoId = targetId;
+        this.status = TaskStatus.MERGED;
+        this.updatedAt = Instant.now();
+    }
+
+    public void absorbActualHours(BigDecimal hours) {
+        this.actualHours = this.actualHours.add(hours);
+        this.updatedAt = Instant.now();
+    }
 
     public void changeStatus(TaskStatus newStatus) {
         this.status = newStatus;

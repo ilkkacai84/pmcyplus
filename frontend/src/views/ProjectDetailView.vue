@@ -32,7 +32,7 @@ const columns: { status: TaskStatus; title: string; hint: string }[] = [
   { status: 'COMPLETED', title: '已完成', hint: '交付通过' },
 ]
 const tasksByStatus = computed(() => Object.fromEntries(columns.map(column => [column.status, project.value?.tasks.filter(task => task.status === column.status) ?? []])))
-const canManage = computed(() => !!project.value && (!!auth.user?.roles.includes('ADMIN') || project.value.project.managerId === auth.user?.id))
+const canManage = computed(() => !!project.value && project.value.project.status !== 'MERGED' && (!!auth.user?.roles.includes('ADMIN') || project.value.project.managerId === auth.user?.id))
 const isCustomer = computed(() => auth.user?.userType === 'CUSTOMER')
 const budgetUsage = computed(() => !project.value?.budget ? 0 : ((Number(project.value.laborCost) + Number(project.value.otherCost)) / Number(project.value.budget)) * 100)
 const ganttRange = computed(() => {
@@ -148,6 +148,7 @@ onMounted(load)
 
 <template>
   <template v-if="project">
+    <RouterLink v-if="project.project.mergedIntoId" :to="`/projects/${project.project.mergedIntoId}`" class="success-message merged-banner">该来源项目已合并并设为只读，点击前往目标项目 →</RouterLink>
     <div class="project-hero">
       <RouterLink to="/projects" class="back-link">← 返回项目</RouterLink>
       <div class="project-hero-row"><div><span class="code">{{ project.project.code }}</span><h1>{{ project.project.name }}</h1><p>{{ project.description || '暂无项目说明' }}</p></div><div class="row-actions"><button v-if="canManage" class="secondary-button" @click="showFinancialForm = !showFinancialForm">维护预算</button><button v-if="canManage" class="primary-button" @click="showTaskForm = !showTaskForm">＋ 新建任务</button></div></div>

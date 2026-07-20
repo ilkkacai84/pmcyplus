@@ -33,6 +33,7 @@ async function signOut() {
         <RouterLink v-if="isAdmin" to="/users" active-class="active"><span>◎</span> 账号管理</RouterLink>
         <RouterLink v-if="isAdmin" to="/audit" active-class="active"><span>◌</span> 审计日志</RouterLink>
         <RouterLink v-if="isAdmin" to="/workflows" active-class="active"><span>⌘</span> 流程模板</RouterLink>
+        <RouterLink v-if="isAdmin" to="/merges" active-class="active"><span>⇉</span> 合并管理</RouterLink>
       </nav>
       <div class="sidebar-note">
         <strong>第一版 MVP</strong>

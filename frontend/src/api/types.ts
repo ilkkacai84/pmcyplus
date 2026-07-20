@@ -132,6 +132,11 @@ export interface ProjectDocument { id:number; title:string; customerVisible:bool
 export interface MemberLoad { userId:number; userName:string; departmentName?:string; capacityHours:number; allocatedHours:number; actualHours:number; loadRate:number; conflict:boolean }
 export interface ResourceReport { from:string; to:string; calculationRule:string; members:MemberLoad[] }
 export interface ReportSummary { projectCount:number; taskCount:number; completionRate:number; overdueRate:number; milestoneAchievementRate:number; departmentLoad:Record<string,number>; memberHours:Record<string,number>; riskDistribution:Record<string,number>; reviewedDeliveries:number; averageAcceptanceHours:number }
+export type MergeObjectType = 'PROJECT' | 'TASK' | 'REQUIREMENT'
+export interface MergeObjectView { id:number; code:string; title:string; fields:Record<string,unknown> }
+export interface MergeConflict { sourceId:number; field:string; sourceValue:unknown; targetValue:unknown }
+export interface MergePreview { objectType:MergeObjectType; sources:MergeObjectView[]; target:MergeObjectView; migrationScope:Record<string,number>; conflicts:MergeConflict[]; policy:string }
+export interface MergeResult { mergeRecordId:number; objectType:MergeObjectType; sourceIds:number[]; targetId:number; status:string; migratedScope:Record<string,number> }
 
 export interface ProjectSummary {
   id: number
@@ -143,6 +148,7 @@ export interface ProjectSummary {
   managerId: number
   managerName: string
   plannedEndAt?: string
+  mergedIntoId?: number
 }
 
 export interface Milestone {
@@ -168,6 +174,7 @@ export interface Task {
   plannedEndAt?: string
   estimatedHours: number
   actualHours: number
+  mergedIntoId?: number
 }
 
 export interface ProjectDetails {
@@ -211,4 +218,5 @@ export interface Requirement {
   status: RequirementStatus
   priority: Priority
   createdAt: string
+  mergedIntoId?: number
 }

@@ -96,6 +96,13 @@ public class Project {
     public BigDecimal getBudget() { return budget; }
     public BigDecimal getLaborCost() { return laborCost; }
     public BigDecimal getOtherCost() { return otherCost; }
+    public Long getMergedIntoId() { return mergedIntoId; }
+
+    public void markMerged(Long targetId) {
+        this.mergedIntoId = targetId;
+        this.status = ProjectStatus.MERGED;
+        this.updatedAt = Instant.now();
+    }
 
     public void changeStatus(ProjectStatus status) {
         this.status = status;

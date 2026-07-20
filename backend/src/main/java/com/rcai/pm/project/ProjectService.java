@@ -147,6 +147,7 @@ public class ProjectService {
     public TaskView transitionTask(Long taskId, TaskStatus target, Authentication authentication) {
         UserAccount actor = current(authentication);
         TaskItem task = tasks.findById(taskId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "任务不存在"));
+        requireActive(task);
         accessibleProject(task.getProject().getId(), authentication);
         if (target == TaskStatus.PENDING_ACCEPTANCE || target == TaskStatus.COMPLETED) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "提交和验收必须使用交付接口");
@@ -169,6 +170,7 @@ public class ProjectService {
     public TaskView completeWithWorklog(Long taskId, CompleteTask request, Authentication authentication) {
         UserAccount actor = current(authentication);
         TaskItem task = tasks.findById(taskId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "任务不存在"));
+        requireActive(task);
         accessibleProject(task.getProject().getId(), authentication);
         boolean allowed = actor.getRoles().contains(Role.ADMIN)
             || task.getProject().getManager().getId().equals(actor.getId())
@@ -199,6 +201,7 @@ public class ProjectService {
     public DeliveryView reviewDelivery(Long taskId, ReviewDelivery request, Authentication authentication) {
         UserAccount actor = current(authentication);
         TaskItem task = tasks.findById(taskId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "任务不存在"));
+        requireActive(task);
         accessibleProject(task.getProject().getId(), authentication);
         boolean customer = task.getProject().getCustomer() != null
             && task.getProject().getCustomer().getId().equals(actor.getId());
@@ -244,10 +247,19 @@ public class ProjectService {
     private Project managedProject(Long id, Authentication authentication) {
         UserAccount user = current(authentication);
         Project project = projects.findById(id).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "项目不存在"));
+        if (project.getMergedIntoId() != null) {
+            throw new ApiException(HttpStatus.CONFLICT, "来源项目已合并，只能查看；请前往目标项目");
+        }
         if (!user.getRoles().contains(Role.ADMIN) && !project.getManager().getId().equals(user.getId())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "只有项目经理或管理员可以管理项目");
         }
         return project;
+    }
+
+    private void requireActive(TaskItem task) {
+        if (task.getMergedIntoId() != null) {
+            throw new ApiException(HttpStatus.CONFLICT, "来源任务已合并，只能查看");
+        }
     }
 
     private UserAccount current(Authentication authentication) {
@@ -285,10 +297,11 @@ public class ProjectService {
                                    @NotNull @DecimalMin("0") BigDecimal otherCost) {}
 
     public record ProjectSummary(Long id, String code, String name, ProjectType projectType, ProjectStatus status,
-                                 Priority priority, Long managerId, String managerName, LocalDateTime plannedEndAt) {
+                                 Priority priority, Long managerId, String managerName, LocalDateTime plannedEndAt,
+                                 Long mergedIntoId) {
         static ProjectSummary from(Project p) {
             return new ProjectSummary(p.getId(), p.getCode(), p.getName(), p.getProjectType(), p.getStatus(), p.getPriority(),
-                p.getManager().getId(), p.getManager().getDisplayName(), p.getPlannedEndAt());
+                p.getManager().getId(), p.getManager().getDisplayName(), p.getPlannedEndAt(), p.getMergedIntoId());
         }
     }
 
@@ -311,13 +324,13 @@ public class ProjectService {
     public record TaskView(Long id, Long milestoneId, Long parentTaskId, String title, String description, Long ownerId,
                            String ownerName, TaskStatus status, Priority priority, LocalDateTime plannedStartAt,
                            LocalDateTime plannedEndAt, LocalDateTime actualStartAt, LocalDateTime actualEndAt,
-                           BigDecimal estimatedHours, BigDecimal actualHours) {
+                           BigDecimal estimatedHours, BigDecimal actualHours, Long mergedIntoId) {
         static TaskView from(TaskItem t) {
             return new TaskView(t.getId(), t.getMilestone() == null ? null : t.getMilestone().getId(),
                 t.getParentTask() == null ? null : t.getParentTask().getId(), t.getTitle(), t.getDescription(),
                 t.getOwner().getId(), t.getOwner().getDisplayName(), t.getStatus(), t.getPriority(),
                 t.getPlannedStartAt(), t.getPlannedEndAt(), t.getActualStartAt(), t.getActualEndAt(),
-                t.getEstimatedHours(), t.getActualHours());
+                t.getEstimatedHours(), t.getActualHours(), t.getMergedIntoId());
         }
     }
 

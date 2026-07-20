@@ -84,6 +84,7 @@ public class RequirementService {
             throw new ApiException(HttpStatus.FORBIDDEN, "只有管理员或项目经理可以分派需求");
         }
         Requirement requirement = requirements.findById(id).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "需求不存在"));
+        requireActive(requirement);
         UserAccount assignee = users.findById(request.assigneeId()).orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "负责人不存在"));
         if (assignee.getUserType() != UserType.INTERNAL) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "需求负责人必须是内部用户");
@@ -105,6 +106,9 @@ public class RequirementService {
 
     @Transactional
     public RequirementView transition(Long id, RequirementStatus status, String opinion, Authentication authentication) {
+        Requirement active = requirements.findById(id)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "需求不存在"));
+        requireActive(active);
         if (status == RequirementStatus.PENDING_APPROVAL) {
             approvals.submit(id, authentication);
             return RequirementView.from(requirements.findById(id).orElseThrow());
@@ -136,6 +140,7 @@ public class RequirementService {
         UserAccount actor = current(authentication);
         Requirement requirement = requirements.findById(id)
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "需求不存在"));
+        requireActive(requirement);
         if (requirement.getStatus() != RequirementStatus.APPROVED) {
             throw new ApiException(HttpStatus.CONFLICT, "只有已批准需求可以创建项目");
         }
@@ -160,6 +165,12 @@ public class RequirementService {
         return created;
     }
 
+    private void requireActive(Requirement requirement) {
+        if (requirement.getMergedIntoId() != null) {
+            throw new ApiException(HttpStatus.CONFLICT, "来源需求已合并，只能查看目标映射");
+        }
+    }
+
     private UserAccount current(Authentication authentication) {
         return users.findByUsernameIgnoreCase(authentication.getName()).orElseThrow();
     }
@@ -181,12 +192,12 @@ public class RequirementService {
     public record RequirementView(Long id, String requirementNo, RequirementSource source, String title, String description,
                                   Long submitterId, String submitterName, Long customerId, Long assigneeId,
                                   String assigneeName, Long projectId, ProjectType projectType, RequirementStatus status,
-                                  Priority priority, Instant createdAt) {
+                                  Priority priority, Instant createdAt, Long mergedIntoId) {
         static RequirementView from(Requirement r) {
             return new RequirementView(r.getId(), r.getRequirementNo(), r.getSource(), r.getTitle(), r.getDescription(),
                 r.getSubmitter().getId(), r.getSubmitter().getDisplayName(), r.getCustomer() == null ? null : r.getCustomer().getId(),
                 r.getAssignee() == null ? null : r.getAssignee().getId(), r.getAssignee() == null ? null : r.getAssignee().getDisplayName(),
-                r.getProject() == null ? null : r.getProject().getId(), r.getProjectType(), r.getStatus(), r.getPriority(), r.getCreatedAt());
+                r.getProject() == null ? null : r.getProject().getId(), r.getProjectType(), r.getStatus(), r.getPriority(), r.getCreatedAt(), r.getMergedIntoId());
         }
     }
 }

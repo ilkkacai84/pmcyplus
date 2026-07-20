@@ -50,6 +50,7 @@ public class ApprovalService {
     public ApprovalView submit(Long requirementId, Authentication authentication) {
         UserAccount actor = current(authentication);
         Requirement requirement = requirement(requirementId);
+        requireActive(requirement);
         boolean owner = requirement.getAssignee() != null && requirement.getAssignee().getId().equals(actor.getId());
         if (!owner && !actor.getRoles().contains(Role.ADMIN)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "只有需求负责人可以提交审批");
@@ -80,6 +81,7 @@ public class ApprovalService {
         }
         UserAccount actor = current(authentication);
         Requirement requirement = requirement(requirementId);
+        requireActive(requirement);
         ApprovalInstance instance = pending(requirementId);
         List<WorkflowApprovalStep> approvalSteps = activeSteps(requirement);
         WorkflowApprovalStep currentStep = approvalSteps.stream()
@@ -122,6 +124,7 @@ public class ApprovalService {
     public ApprovalView withdraw(Long requirementId, OpinionRequest request, Authentication authentication) {
         UserAccount actor = current(authentication);
         Requirement requirement = requirement(requirementId);
+        requireActive(requirement);
         ApprovalInstance instance = pending(requirementId);
         boolean allowed = actor.getRoles().contains(Role.ADMIN)
             || instance.getSubmittedBy().getId().equals(actor.getId())
@@ -147,6 +150,12 @@ public class ApprovalService {
         List<WorkflowApprovalStep> approvalSteps = activeSteps(requirement);
         return instances.findByRequirementIdOrderByCreatedAtDesc(requirementId).stream()
             .map(instance -> view(instance, approvalSteps)).toList();
+    }
+
+    private void requireActive(Requirement requirement) {
+        if (requirement.getMergedIntoId() != null) {
+            throw new ApiException(HttpStatus.CONFLICT, "来源需求已合并，只能查看历史记录");
+        }
     }
 
     private ApprovalView view(ApprovalInstance instance, List<WorkflowApprovalStep> approvalSteps) {
